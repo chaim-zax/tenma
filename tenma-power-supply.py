@@ -22,12 +22,18 @@ if platform.system() == 'Windows':
     DEFAULT_PORT = 'COM99'
 else:
     DEFAULT_PORT = '/dev/ttyACM0'  # try '/dev/ttyACM0' without udev rules
+DEFAULT_MAX_VOLTAGE_POWER_SUPPLY = 30
 DEFAULT_PRECHARGE_VOLTAGE_LEVEL = 3.00
 DEFAULT_PRECHARGE_CURRENT_LEVEL = 0.010
 DEFAULT_CONSTAND_VOLTAGE_LEVEL = 4.20
 DEFAULT_CONSTAND_CURRENT_LEVEL = 0.120
-DEFAULT_END_OF_CURRENT_LEVEL = 0.012
+DEFAULT_END_OF_CURRENT_LEVEL = 0.010
 DEFAULT_TOTAL_CAPACITY = 0.500
+#DEFAULT_SOC_EMPTY_VOLTAGE_LEVEL = 3.10
+DEFAULT_SOC_EMPTY_VOLTAGE_LEVEL = 3.00
+DEFAULT_MAX_CURRENT = 1.000
+DEFAULT_TYPICAL_DISCHARGE_CURRENT = 0.036
+DEFAULT_SERIES_DISCHARGE_RESISTOR = 118.1
 
 m_description = """
 This tool"""
@@ -48,6 +54,10 @@ m_constand_voltage_level = DEFAULT_CONSTAND_VOLTAGE_LEVEL
 m_constand_current_level = DEFAULT_CONSTAND_CURRENT_LEVEL
 m_end_of_current_level = DEFAULT_END_OF_CURRENT_LEVEL
 m_total_capacity = DEFAULT_TOTAL_CAPACITY
+m_soc_empty_voltage_level = DEFAULT_SOC_EMPTY_VOLTAGE_LEVEL
+m_max_current = DEFAULT_MAX_CURRENT
+m_typical_discharge_current = DEFAULT_TYPICAL_DISCHARGE_CURRENT
+m_series_discharge_resistor = DEFAULT_SERIES_DISCHARGE_RESISTOR
 
 def get_command_line_arguments():
     parser = argparse.ArgumentParser(description=m_description, epilog=m_epilog)
@@ -304,6 +314,90 @@ def set_ovp(on):
     time.sleep(0.05)
 
 
+def charge_battery():
+    print('charging battery...')
+    set_output(False)
+    set_current(1, m_precharge_current_level)
+    set_voltage(1, m_constand_voltage_level)
+    set_ocp(False)
+    set_ovp(False)
+    set_output(True)
+
+    voltage = get_actual_voltage(1)
+    ui_feedback = 0
+    while voltage < m_precharge_voltage_level:
+        voltage = get_actual_voltage(1)
+        current = get_actual_current(1)
+        if ui_feedback == 0:
+            print('precharge phase (actual {} V, {} A)'.format(voltage, current))
+        time.sleep(1)
+        ui_feedback = (ui_feedback + 1) % (60 * 5)
+
+    set_current(1, m_constand_current_level)
+
+    voltage = get_actual_voltage(1)
+    ui_feedback = 0
+    while voltage < m_constand_voltage_level:
+        voltage = get_actual_voltage(1)
+        current = get_actual_current(1)
+        if ui_feedback == 0:
+            print('constand current phase (actual {} V, {} A)'.format(voltage, current))
+        time.sleep(1)
+        ui_feedback = (ui_feedback + 1) % (60 * 5)
+
+    current = get_actual_current(1)
+    ui_feedback = 0
+    while current > m_end_of_current_level:
+        voltage = get_actual_voltage(1)
+        current = get_actual_current(1)
+        if ui_feedback == 0:
+            print('constand voltage phase (actual {} V, {} A)'.format(voltage, current))
+        time.sleep(1)
+        ui_feedback = (ui_feedback + 1) % (60 * 5)
+
+    print('battery fully charged')
+    set_output(False)
+
+
+def get_battery_discharge_voltage(channel=1):
+    supply_voltage = get_actual_voltage(channel)
+
+    if m_series_discharge_resistor == 0:
+        return supply_voltage
+
+    current = get_actual_current(channel)
+    return m_series_discharge_resistor * current - supply_voltage
+
+
+def discharge_battery():
+    print('discharging battery...')
+    set_output(False)
+    set_current(1, m_typical_discharge_current)
+    if m_series_discharge_resistor == 0:
+        set_voltage(1, m_soc_empty_voltage_level)
+        set_ovp(False)
+    else:
+        set_voltage(1, m_series_discharge_resistor * m_typical_discharge_current -
+                    m_constand_voltage_level +
+                    (m_constand_voltage_level - m_soc_empty_voltage_level))
+        #set_ovp(True)
+    set_ocp(False)
+    set_output(True)
+
+    voltage = get_battery_discharge_voltage(1)
+    ui_feedback = 0
+    while voltage > m_soc_empty_voltage_level:
+        voltage = get_battery_discharge_voltage(1)
+        current = get_actual_current(1)
+        if ui_feedback == 0:
+            print('discharge phase (actual {} V, {} A)'.format(voltage, current))
+        time.sleep(1)
+        ui_feedback = (ui_feedback + 1) % (60 * 5)
+
+    set_output(False)
+    print('battery fully discharged')
+
+
 # set the default log level
 logging.basicConfig(level=logging.WARNING, stream=sys.stdout, format=FORMAT)
 
@@ -338,11 +432,6 @@ if args.total_capacity is not None:
 if platform.system() == 'Windows':
     m_serial_port = '\\\\.\\' + m_serial_port
 
-# all commands below require a connected device
-res = open_device(port=m_serial_port, baud_rate=m_baud_rate, skip_check=m_skip_check)
-if res != 0:
-    sys.exit(-res)
-
 print('- precharge voltage level = {:4.2f} V'.format(m_precharge_voltage_level))
 print('- precharge current level = {:.0f} mA'.format(m_precharge_current_level * 1000))
 print('- constand voltage level  = {:4.2f} V'.format(m_constand_voltage_level))
@@ -350,45 +439,25 @@ print('- constand current level  = {:.0f} mA'.format(m_constand_current_level * 
 print('- end of current_level    = {:.0f} mA'.format(m_end_of_current_level * 1000))
 print('- total capacity          = {:.0f} mA/h'.format(m_total_capacity * 1000))
 
-set_output(False)
-set_current(1, m_precharge_current_level)
-set_voltage(1, m_constand_voltage_level)
-set_ocp(False)
-set_ovp(False)
-set_output(True)
+if m_precharge_current_level > m_max_current or \
+   m_constand_current_level > m_max_current or \
+   m_end_of_current_level > m_max_current or \
+   m_typical_discharge_current > m_max_current:
+    print('ERROR: one of the current settings exceeds the maximum allowed current ({:.0f} mA)' \
+          .format(m_max_current * 1000))
+    sys.exit(-1)
 
-voltage = get_actual_voltage(1)
-ui_feedback = 0
-while voltage < m_precharge_voltage_level:
-    voltage = get_actual_voltage(1)
-    current = get_actual_current(1)
-    if ui_feedback == 0:
-        print('precharge phase (actual {} V, {} A)'.format(voltage, current))
-    time.sleep(1)
-    ui_feedback = (ui_feedback + 1) % (60 * 5)
+if m_series_discharge_resistor > 0:
+    if m_constand_voltage_level > m_series_discharge_resistor * m_typical_discharge_current:
+        print('WARNING: the series-discharge-resistor is not large enough to create a positive voltage on the power supply')
+    if m_series_discharge_resistor * m_typical_discharge_current - m_soc_empty_voltage_level > \
+       DEFAULT_MAX_VOLTAGE_POWER_SUPPLY:
+        print('WARNING: the series-discharge-resistor is to large to create the correct voltage on the battery')
 
-set_current(1, m_constand_current_level)
+# all commands below require a connected device
+res = open_device(port=m_serial_port, baud_rate=m_baud_rate, skip_check=m_skip_check)
+if res != 0:
+    sys.exit(-res)
 
-voltage = get_actual_voltage(1)
-ui_feedback = 0
-while voltage < m_constand_voltage_level:
-    voltage = get_actual_voltage(1)
-    current = get_actual_current(1)
-    if ui_feedback == 0:
-        print('constand current phase (actual {} V, {} A)'.format(voltage, current))
-    time.sleep(1)
-    ui_feedback = (ui_feedback + 1) % (60 * 5)
-
-current = get_actual_current(1)
-ui_feedback = 0
-while current > m_end_of_current_level:
-    voltage = get_actual_voltage(1)
-    current = get_actual_current(1)
-    if ui_feedback == 0:
-        print('constand voltage phase (actual {} V, {} A)'.format(voltage, current))
-    time.sleep(1)
-    ui_feedback = (ui_feedback + 1) % (60 * 5)
-
-print('battery fully charged')
-#store(1)  # not sure if this works
-set_output(False)
+charge_battery()
+#discharge_battery()
