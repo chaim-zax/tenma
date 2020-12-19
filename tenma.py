@@ -6,6 +6,7 @@
 import platform
 import serial
 import time
+from threading import Thread, Lock
 
 VERSION = "1.0"
 FORMAT = '%(asctime)-15s %(levelname)s %(filename)s:%(lineno)d %(message)s'
@@ -53,19 +54,42 @@ class Tenma:
         self.typical_discharge_current = Tenma.DEFAULT_TYPICAL_DISCHARGE_CURRENT
         self.series_discharge_resistor = Tenma.DEFAULT_SERIES_DISCHARGE_RESISTOR
 
+        self.mutex = Lock()
+
+    def _write(self, data):
+        res = None
+        with self.mutex:
+            res = self.device.write(data.encode('ascii'))
+            time.sleep(0.05)
+        return res
+
+    def _read(self, length):
+        res = None
+        with self.mutex:
+            res = self.device.read(length).decode('ascii')
+            time.sleep(0.05)
+        return res
+
+    def _read_bytes(self, length):
+        res = None
+        with self.mutex:
+            res = self.device.read(length)
+            time.sleep(0.05)
+        return res
+
     def _send_command(self, cmd):
         if self.device is None:
             print('ERROR: no device connected')
             return None
 
-        self.device.write(cmd.encode('ascii'))
+        self._write(cmd)
 
     def _receive_command(self, length=100):
         if self.device is None:
             print('ERROR: no device connected')
             return None
 
-        return self.device.read(length).decode('ascii')
+        return self._read(length)
 
     def set_verbose_level(self, verbose_level):
         self.verbose_level = verbose_level
@@ -128,7 +152,6 @@ class Tenma:
         Sets the CH1 output current to 2.225A
         """
         self._send_command('ISET{}:{:05.3f}'.format(channel, current))
-        time.sleep(0.05)
 
     def get_current(self, channel=1):
         """
@@ -148,7 +171,6 @@ class Tenma:
         Sets the CH1 voltage to 20.50V
         """
         self._send_command('VSET{}:{:05.2f}'.format(channel, voltage))
-        time.sleep(0.05)
 
     def get_voltage(self, channel=1):
         """
@@ -190,7 +212,6 @@ class Tenma:
             self._send_command('BEEP1')
         else:
             self._send_command('BEEP0')
-        time.sleep(0.05)
 
     def set_output(self, on):
         """
@@ -203,7 +224,6 @@ class Tenma:
             self._send_command('OUT1')
         else:
             self._send_command('OUT0')
-        time.sleep(0.05)
 
     def get_status(self):
         """
@@ -223,8 +243,8 @@ class Tenma:
             print('ERROR: no device connected')
             return None
 
-        self.device.write('STATUS?'.encode('ascii'))
-        status = self.device.read(1)[0]
+        self._write('STATUS?')
+        status = self._read_bytes(1)[0]
         ch1 = (status & 0b10000000) >> 7
         ch2 = (status & 0b01000000) >> 6
         tracking = (status & 0b00110000) >> 4
@@ -244,8 +264,8 @@ class Tenma:
             print('ERROR: no device connected')
             return None
 
-        self.device.write('*IDN?'.encode('ascii'))
-        return self.device.read(18).decode('ascii')   # e.g. 'TENMA 72-2540 V2.1'
+        self._write('*IDN?')
+        return self._read(18)   # e.g. 'TENMA 72-2540 V2.1'
 
     def recall(self, nr):
         """
@@ -255,7 +275,6 @@ class Tenma:
         Example RCL1 Recalls the panel setting stored in memory number 1
         """
         self._send_command('RCL{}'.format(nr))
-        time.sleep(0.05)
 
     def store(self, nr):
         """
@@ -278,7 +297,6 @@ class Tenma:
             self._send_command('OCP1')
         else:
             self._send_command('OCP0')
-        time.sleep(0.05)
 
     def set_ovp(self, on):
         """
@@ -291,4 +309,3 @@ class Tenma:
             self._send_command('OVP1')
         else:
             self._send_command('OVP0')
-        time.sleep(0.05)

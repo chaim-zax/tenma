@@ -7,9 +7,11 @@
 import argparse
 import os
 import sys
+import signal
 import logging
 import platform
 import time
+import threading
 from tenma import Tenma
 
 VERSION = "1.0"
@@ -21,6 +23,15 @@ This tool"""
 m_epilog = "tenma-power-supply.py v{:s}, Copyright (c) 2020, Chaim Zax <chaim.zax@gmail.com>" \
            .format(VERSION)
 m_tenma = Tenma()
+m_running = True
+
+
+def signal_handler(sig, frame):
+    global m_running
+    print('')
+    print('aborting...')
+    m_running = False
+    sys.exit(0)
 
 
 def get_command_line_arguments():
@@ -89,38 +100,40 @@ def charge_battery():
     m_tenma.set_output(True)
 
     voltage = m_tenma.get_actual_voltage(1)
-    ui_feedback = 0
-    while voltage < m_precharge_voltage_level:
+    #ui_feedback = 0
+    while voltage < m_precharge_voltage_level and m_running:
         voltage = m_tenma.get_actual_voltage(1)
         current = m_tenma.get_actual_current(1)
-        if ui_feedback == 0:
-            print('pre-charge phase (actual {} V, {} A)'.format(voltage, current))
+        #if ui_feedback == 0:
+        #    print('pre-charge phase (actual {} V, {} A)'.format(voltage, current))
         time.sleep(1)
-        ui_feedback = (ui_feedback + 1) % (60 * 5)
+        #ui_feedback = (ui_feedback + 1) % (60 * 5)
 
-    m_tenma.set_current(1, m_constant_current_level)
+    if m_running:
+        m_tenma.set_current(1, m_constant_current_level)
 
     voltage = m_tenma.get_actual_voltage(1)
-    ui_feedback = 0
-    while voltage < m_constant_voltage_level:
+    #ui_feedback = 0
+    while voltage < m_constant_voltage_level and m_running:
         voltage = m_tenma.get_actual_voltage(1)
         current = m_tenma.get_actual_current(1)
-        if ui_feedback == 0:
-            print('constant current phase (actual {} V, {} A)'.format(voltage, current))
+        #if ui_feedback == 0:
+        #    print('constant current phase (actual {} V, {} A)'.format(voltage, current))
         time.sleep(1)
-        ui_feedback = (ui_feedback + 1) % (60 * 5)
+        #ui_feedback = (ui_feedback + 1) % (60 * 5)
 
     current = m_tenma.get_actual_current(1)
-    ui_feedback = 0
-    while current > m_end_of_current_level:
+    #ui_feedback = 0
+    while current > m_end_of_current_level and m_running:
         voltage = m_tenma.get_actual_voltage(1)
         current = m_tenma.get_actual_current(1)
-        if ui_feedback == 0:
-            print('constant voltage phase (actual {} V, {} A)'.format(voltage, current))
+        #if ui_feedback == 0:
+        #    print('constant voltage phase (actual {} V, {} A)'.format(voltage, current))
         time.sleep(1)
-        ui_feedback = (ui_feedback + 1) % (60 * 5)
+        #ui_feedback = (ui_feedback + 1) % (60 * 5)
 
-    print('battery fully charged')
+    if m_running:
+        print('battery fully charged')
     m_tenma.set_output(False)
 
 
@@ -151,7 +164,7 @@ def discharge_battery():
 
     voltage = get_battery_discharge_voltage(1)
     ui_feedback = 0
-    while voltage > m_soc_empty_voltage_level:
+    while voltage > m_soc_empty_voltage_level and m_running:
         voltage = get_battery_discharge_voltage(1)
         current = m_tenma.get_actual_current(1)
         if ui_feedback == 0:
@@ -159,8 +172,9 @@ def discharge_battery():
         time.sleep(1)
         ui_feedback = (ui_feedback + 1) % (60 * 5)
 
+    if m_running:
+        print('battery fully discharged')
     m_tenma.set_output(False)
-    print('battery fully discharged')
 
 
 # initialize defaults
@@ -236,6 +250,9 @@ m_tenma.set_verbose_level(m_verbose_level)
 if platform.system() == 'Windows':
     m_serial_port = '\\\\.\\' + m_serial_port
 
+# handle CTRL-C
+signal.signal(signal.SIGINT, signal_handler)
+
 # print and check arguments/configuration
 print('- pre-charge voltage level = {:4.2f} V'.format(m_precharge_voltage_level))
 print('- pre-charge current level = {:.0f} mA'.format(m_precharge_current_level * 1000))
@@ -265,5 +282,30 @@ res = m_tenma.open(serial_port=m_serial_port, baud_rate=m_baud_rate, skip_check=
 if res != 0:
     sys.exit(-res)
 
-charge_battery()
+# measure state-of-charge and creat the look-up table
+total_capacity = m_total_capacity * 3.7  # in W/h
+actual_capacity = 0.0
+delay = 1  # in seconds
+start_clock = time.perf_counter()
+
+# the actual charging is done independently (in a separate thread)
+charging = threading.Thread(target=charge_battery)
+charging.start()
+
+prev_clock = start_clock
+while m_running:
+    voltage = m_tenma.get_actual_voltage(1)
+    current = m_tenma.get_actual_current(1)
+    clock = time.perf_counter()
+    actual_capacity += voltage * current * (clock - prev_clock) / 3600
+    prev_clock = clock
+    print('{} V, {} A, {:.0f} mW/h ({:.0f} mW/h), {:.1f} %, {:.0f} s'
+          .format(voltage, current, actual_capacity * 1000, total_capacity * 1000,
+                  100 * actual_capacity / total_capacity, clock - start_clock), end='\r')
+    time.sleep(delay)
+
+print('')
+charging.join()
+m_tenma.set_output(False)
+
 # discharge_battery()
