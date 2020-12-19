@@ -17,14 +17,28 @@ from tenma import Tenma
 VERSION = "1.0"
 FORMAT = '%(asctime)-15s %(levelname)s %(filename)s:%(lineno)d %(message)s'
 DEFAULT_CONFIG = '~/.tenma-config.py'
+DEFAULT_MAX_VOLTAGE_POWER_SUPPLY = 30
+DEFAULT_PRECHARGE_VOLTAGE_LEVEL = 3.00
+DEFAULT_PRECHARGE_CURRENT_LEVEL = 0.010
+DEFAULT_CONSTANT_VOLTAGE_LEVEL = 4.20
+DEFAULT_CONSTANT_CURRENT_LEVEL = 0.120
+DEFAULT_END_OF_CURRENT_LEVEL = 0.020
+DEFAULT_TOTAL_CAPACITY = 0.500
+# DEFAULT_SOC_EMPTY_VOLTAGE_LEVEL = 3.10
+DEFAULT_SOC_EMPTY_VOLTAGE_LEVEL = 3.00
+DEFAULT_MAX_CURRENT = 1.000
+DEFAULT_TYPICAL_DISCHARGE_CURRENT = 0.036
+DEFAULT_SERIES_DISCHARGE_RESISTOR = 118.1
+DEFAULT_DECAY_TIME = 60 * 10
+DEFAULT_LUT_STEPS = 20
 
 m_description = """
 This tool"""
-m_epilog = "tenma-power-supply.py v{:s}, Copyright (c) 2020, Chaim Zax <chaim.zax@gmail.com>" \
+m_epilog = "battery-profiler.py v{:s}, Copyright (c) 2020, Chaim Zax <chaim.zax@gmail.com>" \
            .format(VERSION)
 m_tenma = Tenma()
 m_running = True
-
+m_pause_lock = threading.Lock()
 
 def signal_handler(sig, frame):
     global m_running
@@ -55,42 +69,44 @@ def get_command_line_arguments():
                         action='store_true', default=None,
                         help="skip sanity/device checking on start-up")
     parser.add_argument('-PV', '--precharge-voltage-level',
-                        action='store', default=Tenma.DEFAULT_PRECHARGE_VOLTAGE_LEVEL, type=float,
-                        help='(default {} V)'.format(Tenma.DEFAULT_PRECHARGE_VOLTAGE_LEVEL))
+                        action='store', default=DEFAULT_PRECHARGE_VOLTAGE_LEVEL, type=float,
+                        help='(default {} V)'.format(DEFAULT_PRECHARGE_VOLTAGE_LEVEL))
     parser.add_argument('-PC', '--precharge-current-level',
-                        action='store', default=Tenma.DEFAULT_PRECHARGE_CURRENT_LEVEL, type=float,
-                        help='(default {} A)'.format(Tenma.DEFAULT_PRECHARGE_CURRENT_LEVEL))
+                        action='store', default=DEFAULT_PRECHARGE_CURRENT_LEVEL, type=float,
+                        help='(default {} A)'.format(DEFAULT_PRECHARGE_CURRENT_LEVEL))
     parser.add_argument('-CV', '--constant-voltage-level',
-                        action='store', default=Tenma.DEFAULT_CONSTANT_VOLTAGE_LEVEL, type=float,
-                        help='(default {} V)'.format(Tenma.DEFAULT_CONSTANT_VOLTAGE_LEVEL))
+                        action='store', default=DEFAULT_CONSTANT_VOLTAGE_LEVEL, type=float,
+                        help='(default {} V)'.format(DEFAULT_CONSTANT_VOLTAGE_LEVEL))
     parser.add_argument('-CC', '--constant-current-level',
-                        action='store', default=Tenma.DEFAULT_CONSTANT_CURRENT_LEVEL, type=float,
-                        help='(default {} A)'.format(Tenma.DEFAULT_CONSTANT_CURRENT_LEVEL))
+                        action='store', default=DEFAULT_CONSTANT_CURRENT_LEVEL, type=float,
+                        help='(default {} A)'.format(DEFAULT_CONSTANT_CURRENT_LEVEL))
     parser.add_argument('-EC', '--end-of-current-level',
-                        action='store', default=Tenma.DEFAULT_END_OF_CURRENT_LEVEL, type=float,
-                        help='(default {} A)'.format(Tenma.DEFAULT_END_OF_CURRENT_LEVEL))
+                        action='store', default=DEFAULT_END_OF_CURRENT_LEVEL, type=float,
+                        help='(default {} A)'.format(DEFAULT_END_OF_CURRENT_LEVEL))
     parser.add_argument('-C', '--total-capacity',
-                        action='store', default=Tenma.DEFAULT_TOTAL_CAPACITY, type=float,
+                        action='store', default=DEFAULT_TOTAL_CAPACITY, type=float,
                         help='value in A/h at 3.7V (default {} A/h)'
-                        .format(Tenma.DEFAULT_TOTAL_CAPACITY))
+                        .format(DEFAULT_TOTAL_CAPACITY))
     parser.add_argument('-EV', '--soc-empty-voltage-level',
-                        action='store', default=Tenma.DEFAULT_SOC_EMPTY_VOLTAGE_LEVEL, type=float,
-                        help='(default {} V)'.format(Tenma.DEFAULT_SOC_EMPTY_VOLTAGE_LEVEL))
+                        action='store', default=DEFAULT_SOC_EMPTY_VOLTAGE_LEVEL, type=float,
+                        help='(default {} V)'.format(DEFAULT_SOC_EMPTY_VOLTAGE_LEVEL))
     parser.add_argument('-MC', '--max-current',
-                        action='store', default=Tenma.DEFAULT_MAX_CURRENT, type=float,
-                        help='(default {} A)'.format(Tenma.DEFAULT_MAX_CURRENT))
+                        action='store', default=DEFAULT_MAX_CURRENT, type=float,
+                        help='(default {} A)'.format(DEFAULT_MAX_CURRENT))
     parser.add_argument('-DC', '--typical-discharge-current',
-                        action='store', default=Tenma.DEFAULT_TYPICAL_DISCHARGE_CURRENT, type=float,
-                        help='(default {} A)'.format(Tenma.DEFAULT_TYPICAL_DISCHARGE_CURRENT))
+                        action='store', default=DEFAULT_TYPICAL_DISCHARGE_CURRENT, type=float,
+                        help='(default {} A)'.format(DEFAULT_TYPICAL_DISCHARGE_CURRENT))
     parser.add_argument('-DR', '--series-discharge-resistor',
-                        action='store', default=Tenma.DEFAULT_SERIES_DISCHARGE_RESISTOR, type=float,
-                        help='(default {} Ohm)'.format(Tenma.DEFAULT_SERIES_DISCHARGE_RESISTOR))
+                        action='store', default=DEFAULT_SERIES_DISCHARGE_RESISTOR, type=float,
+                        help='(default {} Ohm)'.format(DEFAULT_SERIES_DISCHARGE_RESISTOR))
 
     arguments = parser.parse_args()
     return arguments
 
 
 def charge_battery():
+    global m_running
+
     print('charging battery...')
     m_tenma.set_output(False)
     m_tenma.set_current(1, m_precharge_current_level)
@@ -102,6 +118,8 @@ def charge_battery():
     voltage = m_tenma.get_actual_voltage(1)
     #ui_feedback = 0
     while voltage < m_precharge_voltage_level and m_running:
+        with m_pause_lock:
+            pass  # just continue if we are not paused
         voltage = m_tenma.get_actual_voltage(1)
         current = m_tenma.get_actual_current(1)
         #if ui_feedback == 0:
@@ -115,6 +133,8 @@ def charge_battery():
     voltage = m_tenma.get_actual_voltage(1)
     #ui_feedback = 0
     while voltage < m_constant_voltage_level and m_running:
+        with m_pause_lock:
+            pass  # just continue if we are not paused
         voltage = m_tenma.get_actual_voltage(1)
         current = m_tenma.get_actual_current(1)
         #if ui_feedback == 0:
@@ -125,6 +145,8 @@ def charge_battery():
     current = m_tenma.get_actual_current(1)
     #ui_feedback = 0
     while current > m_end_of_current_level and m_running:
+        with m_pause_lock:
+            pass  # just continue if we are not paused
         voltage = m_tenma.get_actual_voltage(1)
         current = m_tenma.get_actual_current(1)
         #if ui_feedback == 0:
@@ -133,7 +155,9 @@ def charge_battery():
         #ui_feedback = (ui_feedback + 1) % (60 * 5)
 
     if m_running:
+        print('')
         print('battery fully charged')
+        m_running = False
     m_tenma.set_output(False)
 
 
@@ -148,6 +172,8 @@ def get_battery_discharge_voltage(channel=1):
 
 
 def discharge_battery():
+    global m_running
+
     print('discharging battery...')
     m_tenma.set_output(False)
     m_tenma.set_current(1, m_typical_discharge_current)
@@ -158,22 +184,26 @@ def discharge_battery():
         m_tenma.set_voltage(1, m_series_discharge_resistor * m_typical_discharge_current -
                             m_constant_voltage_level +
                             (m_constant_voltage_level - m_soc_empty_voltage_level))
-        # set_ovp(True)
+        set_ovp(True)
     m_tenma.set_ocp(False)
     m_tenma.set_output(True)
 
     voltage = get_battery_discharge_voltage(1)
-    ui_feedback = 0
+    #ui_feedback = 0
     while voltage > m_soc_empty_voltage_level and m_running:
+        with m_pause_lock:
+            pass  # just continue if we are not paused
         voltage = get_battery_discharge_voltage(1)
         current = m_tenma.get_actual_current(1)
-        if ui_feedback == 0:
-            print('discharge phase (actual {} V, {} A)'.format(voltage, current))
+        #if ui_feedback == 0:
+        #    print('discharge phase (actual {} V, {} A)'.format(voltage, current))
         time.sleep(1)
-        ui_feedback = (ui_feedback + 1) % (60 * 5)
+        #ui_feedback = (ui_feedback + 1) % (60 * 5)
 
     if m_running:
+        print('')
         print('battery fully discharged')
+        m_running = False
     m_tenma.set_output(False)
 
 
@@ -188,16 +218,17 @@ m_skip_check = Tenma.DEFAULT_SKIP_CHECK
 m_device = None
 m_device_id = None
 m_device_type = None
-m_precharge_voltage_level = Tenma.DEFAULT_PRECHARGE_VOLTAGE_LEVEL
-m_precharge_current_level = Tenma.DEFAULT_PRECHARGE_CURRENT_LEVEL
-m_constant_voltage_level = Tenma.DEFAULT_CONSTANT_VOLTAGE_LEVEL
-m_constant_current_level = Tenma.DEFAULT_CONSTANT_CURRENT_LEVEL
-m_end_of_current_level = Tenma.DEFAULT_END_OF_CURRENT_LEVEL
-m_total_capacity = Tenma.DEFAULT_TOTAL_CAPACITY
-m_soc_empty_voltage_level = Tenma.DEFAULT_SOC_EMPTY_VOLTAGE_LEVEL
-m_max_current = Tenma.DEFAULT_MAX_CURRENT
-m_typical_discharge_current = Tenma.DEFAULT_TYPICAL_DISCHARGE_CURRENT
-m_series_discharge_resistor = Tenma.DEFAULT_SERIES_DISCHARGE_RESISTOR
+m_precharge_voltage_level = DEFAULT_PRECHARGE_VOLTAGE_LEVEL
+m_precharge_current_level = DEFAULT_PRECHARGE_CURRENT_LEVEL
+m_constant_voltage_level = DEFAULT_CONSTANT_VOLTAGE_LEVEL
+m_constant_current_level = DEFAULT_CONSTANT_CURRENT_LEVEL
+m_end_of_current_level = DEFAULT_END_OF_CURRENT_LEVEL
+m_total_capacity = DEFAULT_TOTAL_CAPACITY
+m_soc_empty_voltage_level = DEFAULT_SOC_EMPTY_VOLTAGE_LEVEL
+m_max_current = DEFAULT_MAX_CURRENT
+m_typical_discharge_current = DEFAULT_TYPICAL_DISCHARGE_CURRENT
+m_series_discharge_resistor = DEFAULT_SERIES_DISCHARGE_RESISTOR
+m_decay_time = DEFAULT_DECAY_TIME
 
 # get all command line options
 args = get_command_line_arguments()
@@ -274,7 +305,7 @@ if m_series_discharge_resistor > 0:
         print('WARNING: the series-discharge-resistor is not large enough to create a positive voltage '
               'on the power supply')
     if m_series_discharge_resistor * m_typical_discharge_current - m_soc_empty_voltage_level > \
-       Tenma.DEFAULT_MAX_VOLTAGE_POWER_SUPPLY:
+       DEFAULT_MAX_VOLTAGE_POWER_SUPPLY:
         print('WARNING: the series-discharge-resistor is to large to create the correct voltage on the battery')
 
 # all commands below require a connected power supply
@@ -284,6 +315,7 @@ if res != 0:
 
 # measure state-of-charge and creat the look-up table
 total_capacity = m_total_capacity * 3.7  # in W/h
+delta_capacity = total_capacity / DEFAULT_LUT_STEPS  # measure every 5 % increase
 actual_capacity = 0.0
 delay = 1  # in seconds
 start_clock = time.perf_counter()
@@ -293,6 +325,7 @@ charging = threading.Thread(target=charge_battery)
 charging.start()
 
 prev_clock = start_clock
+prev_capacity = actual_capacity
 while m_running:
     voltage = m_tenma.get_actual_voltage(1)
     current = m_tenma.get_actual_current(1)
@@ -302,6 +335,17 @@ while m_running:
     print('{} V, {} A, {:.0f} mW/h ({:.0f} mW/h), {:.1f} %, {:.0f} s'
           .format(voltage, current, actual_capacity * 1000, total_capacity * 1000,
                   100 * actual_capacity / total_capacity, clock - start_clock), end='\r')
+
+    if actual_capacity - prev_capacity >= delta_capacity:
+        print('')
+        print('capacity increased {:.0f} mW/h ({} %), pausing for {} seconds'
+              .format(actual_capacity - prev_capacity, 100 / DEFAULT_LUT_STEPS, m_decay_time))
+        prev_capacity = actual_capacity
+        with m_pause_lock:
+            m_tenma.set_output(False)
+            time.sleep(m_decay_time)
+            m_tenma.set_output(True)
+
     time.sleep(delay)
 
 print('')

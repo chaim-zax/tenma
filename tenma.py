@@ -2,13 +2,13 @@
 #
 # Copyright (C) 2020, Chaim Zax <chaim.zax@gmail.com>
 #
-
+# version: 0.1
+#
 import platform
 import serial
 import time
-from threading import Thread, Lock
+import threading
 
-VERSION = "1.0"
 FORMAT = '%(asctime)-15s %(levelname)s %(filename)s:%(lineno)d %(message)s'
 
 
@@ -19,18 +19,6 @@ class Tenma:
     DEFAULT_SERIAL_PORT_LINUX = '/dev/ttyACM0'  # try '/dev/ttyACM0' without udev rules
     DEFAULT_BAUD_RATE = 115200
     DEFAULT_SKIP_CHECK = False
-    DEFAULT_MAX_VOLTAGE_POWER_SUPPLY = 30
-    DEFAULT_PRECHARGE_VOLTAGE_LEVEL = 3.00
-    DEFAULT_PRECHARGE_CURRENT_LEVEL = 0.010
-    DEFAULT_CONSTANT_VOLTAGE_LEVEL = 4.20
-    DEFAULT_CONSTANT_CURRENT_LEVEL = 0.120
-    DEFAULT_END_OF_CURRENT_LEVEL = 0.010
-    DEFAULT_TOTAL_CAPACITY = 0.500
-    # DEFAULT_SOC_EMPTY_VOLTAGE_LEVEL = 3.10
-    DEFAULT_SOC_EMPTY_VOLTAGE_LEVEL = 3.00
-    DEFAULT_MAX_CURRENT = 1.000
-    DEFAULT_TYPICAL_DISCHARGE_CURRENT = 0.036
-    DEFAULT_SERIES_DISCHARGE_RESISTOR = 118.1
 
     def __init__(self):
         self.verbose_level = Tenma.DEFAULT_VERBOSE_LEVEL
@@ -43,18 +31,7 @@ class Tenma:
         self.device = None
         self.device_id = None
         self.device_type = None
-        self.precharge_voltage_level = Tenma.DEFAULT_PRECHARGE_VOLTAGE_LEVEL
-        self.precharge_current_level = Tenma.DEFAULT_PRECHARGE_CURRENT_LEVEL
-        self.constant_voltage_level = Tenma.DEFAULT_CONSTANT_VOLTAGE_LEVEL
-        self.constant_current_level = Tenma.DEFAULT_CONSTANT_CURRENT_LEVEL
-        self.end_of_current_level = Tenma.DEFAULT_END_OF_CURRENT_LEVEL
-        self.total_capacity = Tenma.DEFAULT_TOTAL_CAPACITY
-        self.soc_empty_voltage_level = Tenma.DEFAULT_SOC_EMPTY_VOLTAGE_LEVEL
-        self.max_current = Tenma.DEFAULT_MAX_CURRENT
-        self.typical_discharge_current = Tenma.DEFAULT_TYPICAL_DISCHARGE_CURRENT
-        self.series_discharge_resistor = Tenma.DEFAULT_SERIES_DISCHARGE_RESISTOR
-
-        self.mutex = Lock()
+        self.mutex = threading.Lock()
 
     def _write(self, data):
         res = None
