@@ -34,36 +34,30 @@ class Tenma:
         self.mutex = threading.Lock()
 
     def _write(self, data):
-        res = None
-        with self.mutex:
-            res = self.device.write(data.encode('ascii'))
-            time.sleep(0.05)
+        res = self.device.write(data.encode('ascii'))
+        time.sleep(0.05)
         return res
 
     def _read(self, length):
-        res = None
-        with self.mutex:
-            res = self.device.read(length).decode('ascii')
-            time.sleep(0.05)
+        res = self.device.read(length).decode('ascii')
+        time.sleep(0.05)
         return res
 
     def _read_bytes(self, length):
-        res = None
-        with self.mutex:
-            res = self.device.read(length)
-            time.sleep(0.05)
+        res = self.device.read(length)
+        time.sleep(0.05)
         return res
 
     def _send_command(self, cmd):
         if self.device is None:
-            print('ERROR: no device connected')
+            print('ERROR: no power supply connected')
             return None
 
         self._write(cmd)
 
     def _receive_command(self, length=100):
         if self.device is None:
-            print('ERROR: no device connected')
+            print('ERROR: no power supply connected')
             return None
 
         return self._read(length)
@@ -84,9 +78,9 @@ class Tenma:
         except serial.serialutil.SerialException:
             if not allow_fail:
                 if platform.system() == 'Windows':
-                    print("ERROR: No device found (use the '-p COM1' option and provide the correct port)")
+                    print("ERROR: No power supply found (use the '-p COM1' option and provide the correct port)")
                 else:
-                    print("ERROR: No device found (use the '-p /dev/ttyUSB0' option and provide the correct port, "
+                    print("ERROR: No power supply found (use the '-p /dev/ttyUSB0' option and provide the correct port, "
                           "or install the udev rule as described in the INSTALL file)")
             self.device = None
             return -1
@@ -106,17 +100,17 @@ class Tenma:
         self.device_id = self.get_device_id()
 
         if self.device_id == '' or len(self.device_id) < 5:
-            print("ERROR: device not found or supported")
+            print("ERROR: power supply not found or supported")
             return -1
 
         self.device_type = self.device_id[6:13]
 
         if self.device_id.startswith('TENMA'):
             if self.verbose_level == 2:
-                print("device found with id '{}' (type {})".format(self.device_id, self.device_type))
+                print("power supply found with id '{}' (type {})".format(self.device_id, self.device_type))
 
         else:
-            print("ERROR: device not found or supported")
+            print("ERROR: power supply not found or supported")
             return -1
 
         return 0
@@ -128,7 +122,8 @@ class Tenma:
         Example:ISET1:2.225
         Sets the CH1 output current to 2.225A
         """
-        self._send_command('ISET{}:{:05.3f}'.format(channel, current))
+        with self.mutex:
+            self._send_command('ISET{}:{:05.3f}'.format(channel, current))
 
     def get_current(self, channel=1):
         """
@@ -137,8 +132,10 @@ class Tenma:
         Example: ISET1?
         Returns the CH1 output current setting.
         """
-        self._send_command('ISET{}?'.format(channel))
-        return float(self._receive_command(6))
+        with self.mutex:
+            self._send_command('ISET{}?'.format(channel))
+            res = float(self._receive_command(6))
+        return res
 
     def set_voltage(self, channel=1, voltage=0):
         """
@@ -147,7 +144,8 @@ class Tenma:
         Example VSET1:20.50
         Sets the CH1 voltage to 20.50V
         """
-        self._send_command('VSET{}:{:05.2f}'.format(channel, voltage))
+        with self.mutex:
+            self._send_command('VSET{}:{:05.2f}'.format(channel, voltage))
 
     def get_voltage(self, channel=1):
         """
@@ -156,8 +154,10 @@ class Tenma:
         Example VSET1?
         Returns the CH1 voltage setting
         """
-        self._send_command('VSET{}?'.format(channel))
-        return float(self._receive_command(5))
+        with self.mutex:
+            self._send_command('VSET{}?'.format(channel))
+            res = float(self._receive_command(5))
+        return res
 
     def get_actual_current(self, channel=1):
         """
@@ -166,8 +166,10 @@ class Tenma:
         Example IOUT1?
         Returns the CH1 output current
         """
-        self._send_command('IOUT{}?'.format(channel))
-        return float(self._receive_command(5))
+        with self.mutex:
+            self._send_command('IOUT{}?'.format(channel))
+            res = float(self._receive_command(5))
+        return res
 
     def get_actual_voltage(self, channel=1):
         """
@@ -176,8 +178,10 @@ class Tenma:
         Example VOUT1?
         Returns the CH1 output voltage
         """
-        self._send_command('VOUT{}?'.format(channel))
-        return float(self._receive_command(5))
+        with self.mutex:
+            self._send_command('VOUT{}?'.format(channel))
+            res = float(self._receive_command(5))
+        return res
 
     def set_beep(self, on):
         """
@@ -185,10 +189,11 @@ class Tenma:
         Description:Turns on or off the beep. Boolean: boolean logic.
         Example BEEP1 Turns on the beep.
         """
-        if on:
-            self._send_command('BEEP1')
-        else:
-            self._send_command('BEEP0')
+        with self.mutex:
+            if on:
+                self._send_command('BEEP1')
+            else:
+                self._send_command('BEEP0')
 
     def set_output(self, on):
         """
@@ -197,10 +202,11 @@ class Tenma:
         Boolean:0 OFF,1 ON
         Example: OUT1 Turns on the output
         """
-        if on:
-            self._send_command('OUT1')
-        else:
-            self._send_command('OUT0')
+        with self.mutex:
+            if on:
+                self._send_command('OUT1')
+            else:
+                self._send_command('OUT0')
 
     def get_status(self):
         """
@@ -217,17 +223,18 @@ class Tenma:
         7 N/A N/A
         """
         if self.device is None:
-            print('ERROR: no device connected')
+            print('ERROR: no power supply found connected')
             return None
 
-        self._write('STATUS?')
-        status = self._read_bytes(1)[0]
-        ch1 = (status & 0b10000000) >> 7
-        ch2 = (status & 0b01000000) >> 6
-        tracking = (status & 0b00110000) >> 4
-        beep = (status & 0b00001000) >> 3
-        lock = (status & 0b00000100) >> 2
-        output = (status & 0b00000010) >> 1
+        with self.mutex:
+            self._write('STATUS?')
+            status = self._read_bytes(1)[0]
+            ch1 = (status & 0b10000000) >> 7
+            ch2 = (status & 0b01000000) >> 6
+            tracking = (status & 0b00110000) >> 4
+            beep = (status & 0b00001000) >> 3
+            lock = (status & 0b00000100) >> 2
+            output = (status & 0b00000010) >> 1
         return {'ch1': ch1, 'ch2': ch2, 'tracking': tracking, 'beep': beep, 'lock': lock, 'output': output}
 
     def get_device_id(self):
@@ -238,11 +245,13 @@ class Tenma:
         Contents TENMA 72‐2535 V2.0 (Manufacturer, model name,).
         """
         if self.device is None:
-            print('ERROR: no device connected')
+            print('ERROR: no power supply connected')
             return None
 
-        self._write('*IDN?')
-        return self._read(18)   # e.g. 'TENMA 72-2540 V2.1'
+        with self.mutex:
+            self._write('*IDN?')
+            res = self._read(18)   # e.g. 'TENMA 72-2540 V2.1'
+        return res
 
     def recall(self, nr):
         """
@@ -251,7 +260,8 @@ class Tenma:
         NR1 1 – 5: Memory number 1 to 5
         Example RCL1 Recalls the panel setting stored in memory number 1
         """
-        self._send_command('RCL{}'.format(nr))
+        with self.mutex:
+            self._send_command('RCL{}'.format(nr))
 
     def store(self, nr):
         """
@@ -260,8 +270,9 @@ class Tenma:
         NR1 1 – 5: Memory number 1 to 5
         Example: SAV1 Stores the panel setting in memory number 1
         """
-        self._send_command('SAV{}'.format(nr))
-        time.sleep(0.1)
+        with self.mutex:
+            self._send_command('SAV{}'.format(nr))
+            time.sleep(0.1)
 
     def set_ocp(self, on):
         """
@@ -270,10 +281,11 @@ class Tenma:
         Boolean: 0 OFF, 1 ON
         Example: OCP1 Turns on the OCP
         """
-        if on:
-            self._send_command('OCP1')
-        else:
-            self._send_command('OCP0')
+        with self.mutex:
+            if on:
+                self._send_command('OCP1')
+            else:
+                self._send_command('OCP0')
 
     def set_ovp(self, on):
         """
@@ -282,7 +294,8 @@ class Tenma:
         Boolean: 0 OFF, 1 ON
         Example: OVP1 Turns on the OVP
         """
-        if on:
-            self._send_command('OVP1')
-        else:
-            self._send_command('OVP0')
+        with self.mutex:
+            if on:
+                self._send_command('OVP1')
+            else:
+                self._send_command('OVP0')

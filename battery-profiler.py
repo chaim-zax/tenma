@@ -28,7 +28,7 @@ DEFAULT_TOTAL_CAPACITY = 0.500
 DEFAULT_SOC_EMPTY_VOLTAGE_LEVEL = 3.00
 DEFAULT_MAX_CURRENT = 1.000
 DEFAULT_TYPICAL_DISCHARGE_CURRENT = 0.036
-DEFAULT_SERIES_DISCHARGE_RESISTOR = 118.1
+DEFAULT_SERIES_DISCHARGE_RESISTOR = 127.4
 DEFAULT_DECAY_TIME = 60 * 10
 DEFAULT_LUT_STEPS = 20
 
@@ -38,6 +38,7 @@ m_epilog = "battery-profiler.py v{:s}, Copyright (c) 2020, Chaim Zax <chaim.zax@
            .format(VERSION)
 m_tenma = Tenma()
 m_running = True
+m_discharge_test = False
 m_pause_lock = threading.Lock()
 
 def signal_handler(sig, frame):
@@ -105,9 +106,10 @@ def get_command_line_arguments():
 
 
 def charge_battery():
-    global m_running
+    global m_running, m_discharge_test
 
     print('charging battery...')
+    m_discharge_test = False
     m_tenma.set_output(False)
     m_tenma.set_current(1, m_precharge_current_level)
     m_tenma.set_voltage(1, m_constant_voltage_level)
@@ -161,6 +163,12 @@ def charge_battery():
     m_tenma.set_output(False)
 
 
+def get_battery_voltage(channel=1):
+    if m_discharge_test:
+        return get_battery_discharge_voltage(channel)
+    return m_tenma.get_actual_voltage(channel)
+
+
 def get_battery_discharge_voltage(channel=1):
     supply_voltage = m_tenma.get_actual_voltage(channel)
 
@@ -172,9 +180,10 @@ def get_battery_discharge_voltage(channel=1):
 
 
 def discharge_battery():
-    global m_running
+    global m_running, m_discharge_test
 
     print('discharging battery...')
+    m_discharge_test = True
     m_tenma.set_output(False)
     m_tenma.set_current(1, m_typical_discharge_current)
     if m_series_discharge_resistor == 0:
@@ -184,7 +193,7 @@ def discharge_battery():
         m_tenma.set_voltage(1, m_series_discharge_resistor * m_typical_discharge_current -
                             m_constant_voltage_level +
                             (m_constant_voltage_level - m_soc_empty_voltage_level))
-        set_ovp(True)
+        m_tenma.set_ovp(True)
     m_tenma.set_ocp(False)
     m_tenma.set_output(True)
 
@@ -285,12 +294,18 @@ if platform.system() == 'Windows':
 signal.signal(signal.SIGINT, signal_handler)
 
 # print and check arguments/configuration
-print('- pre-charge voltage level = {:4.2f} V'.format(m_precharge_voltage_level))
-print('- pre-charge current level = {:.0f} mA'.format(m_precharge_current_level * 1000))
-print('- constant voltage level   = {:4.2f} V'.format(m_constant_voltage_level))
-print('- constant current level   = {:.0f} mA'.format(m_constant_current_level * 1000))
-print('- end of current_level     = {:.0f} mA'.format(m_end_of_current_level * 1000))
-print('- total capacity           = {:.0f} mA/h'.format(m_total_capacity * 1000))
+print('- pre-charge voltage level  = {:4.2f} V'.format(m_precharge_voltage_level))
+print('- pre-charge current level  = {:.0f} mA'.format(m_precharge_current_level * 1000))
+print('- constant voltage level    = {:4.2f} V'.format(m_constant_voltage_level))
+print('- constant current level    = {:.0f} mA'.format(m_constant_current_level * 1000))
+print('- end of current level      = {:.0f} mA'.format(m_end_of_current_level * 1000))
+print('- total capacity            = {:.0f} mA/h ({:.0f} mW/h)'
+      .format(m_total_capacity * 1000, m_total_capacity * 1000 * 3.7))
+print('- soc empty voltage level   = {:4.2f} V'.format(m_soc_empty_voltage_level))
+print('- max current               = {:.0f} mA'.format(m_max_current * 1000))
+print('- typical discharge current = {:.0f} mA'.format(m_typical_discharge_current * 1000))
+print('- series discharge resistor = {} Ohm'.format(m_series_discharge_resistor))
+print('- decay time                = {} s'.format(m_decay_time))
 
 if m_precharge_current_level > m_max_current or \
    m_constant_current_level > m_max_current or \
@@ -320,25 +335,30 @@ actual_capacity = 0.0
 delay = 1  # in seconds
 start_clock = time.perf_counter()
 
-# the actual charging is done independently (in a separate thread)
-charging = threading.Thread(target=charge_battery)
-charging.start()
+# the actual charging/discharging is done independently (in a separate thread)
+charger = threading.Thread(target=charge_battery)
+#charger = threading.Thread(target=discharge_battery)
+charger.start()
 
 prev_clock = start_clock
 prev_capacity = actual_capacity
 while m_running:
-    voltage = m_tenma.get_actual_voltage(1)
+    voltage = get_battery_voltage(1)
+    if voltage == 0:
+        time.sleep(0.1)
+        continue  # charging/discharging not yet started
+
     current = m_tenma.get_actual_current(1)
     clock = time.perf_counter()
     actual_capacity += voltage * current * (clock - prev_clock) / 3600
     prev_clock = clock
-    print('{} V, {} A, {:.0f} mW/h ({:.0f} mW/h), {:.1f} %, {:.0f} s'
+    print('{:.2f} V, {:.3f} A, {:.0f} mW/h ({:.0f} mW/h), {:.1f} %, {:.0f} s'
           .format(voltage, current, actual_capacity * 1000, total_capacity * 1000,
                   100 * actual_capacity / total_capacity, clock - start_clock), end='\r')
 
     if actual_capacity - prev_capacity >= delta_capacity:
         print('')
-        print('capacity increased {:.0f} mW/h ({} %), pausing for {} seconds'
+        print('capacity {:.0f} mW/h ({} %), pausing for {} seconds'
               .format(actual_capacity - prev_capacity, 100 / DEFAULT_LUT_STEPS, m_decay_time))
         prev_capacity = actual_capacity
         with m_pause_lock:
@@ -349,7 +369,5 @@ while m_running:
     time.sleep(delay)
 
 print('')
-charging.join()
+charger.join()
 m_tenma.set_output(False)
-
-# discharge_battery()
