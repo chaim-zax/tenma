@@ -19,6 +19,10 @@ class Tenma:
     DEFAULT_SERIAL_PORT_LINUX = '/dev/ttyACM0'  # try '/dev/ttyACM0' without udev rules
     DEFAULT_BAUD_RATE = 115200
     DEFAULT_SKIP_CHECK = False
+    DEFAULT_POWER_SUPPLY_MAX_VOLTAGE = 30
+    DEFAULT_POWER_SUPPLY_MAX_CURRENT = 5
+    CHANNEL_1 = 1
+    CHANNEL_2 = 2
 
     def __init__(self):
         self.verbose_level = Tenma.DEFAULT_VERBOSE_LEVEL
