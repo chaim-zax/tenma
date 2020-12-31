@@ -12,9 +12,11 @@ import logging
 import platform
 import time
 import threading
+
 try:
     from Phidget22.Phidget import *
     from Phidget22.Devices.DigitalOutput import *
+
     m_relays_connected = True
 except ImportError as error:
     print('disabling relays, Phidget library not found (see https://www.phidgets.com/docs/Language_-_Python)')
@@ -28,30 +30,36 @@ DEFAULT_PRECHARGE_VOLTAGE_LEVEL = 3.00
 DEFAULT_PRECHARGE_CURRENT_LEVEL = 0.010
 DEFAULT_CONSTANT_VOLTAGE_LEVEL = 4.20
 DEFAULT_CONSTANT_CURRENT_LEVEL = 0.250  # between 1 and 0.5 C (total-capacity)
-DEFAULT_END_OF_CURRENT_LEVEL = 0.020
+DEFAULT_END_OF_CURRENT_LEVEL = 0.025
 DEFAULT_TOTAL_CAPACITY = 0.500
 DEFAULT_NOMINAL_VOLTAGE = 3.7
-# DEFAULT_SOC_EMPTY_VOLTAGE_LEVEL = 3.10
-DEFAULT_SOC_EMPTY_VOLTAGE_LEVEL = 3.00
+DEFAULT_SOC_EMPTY_VOLTAGE_LEVEL = 3.10
 DEFAULT_MAX_CURRENT = 1.000
 DEFAULT_TYPICAL_DISCHARGE_CURRENT = 0.036
-DEFAULT_SERIES_CONNECTION_RESISTANCE = 0.74
-DEFAULT_SERIES_DISCHARGE_RESISTOR = 127.4
+DEFAULT_SERIES_CONNECTION_RESISTANCE = 0.94  # increase if measured voltage during charge is too high
+DEFAULT_SERIES_DISCHARGE_RESISTOR = 118.8 + 7.75  # increase if measured voltage during discharge is too low
 DEFAULT_DECAY_TIME = 60 * 15
 DEFAULT_LUT_STEPS = 20
+
+RELAYS_NEG_CON = 0
+RELAYS_POS_CON = 3
+RELAYS_ENABLE_BATTERY = 1
+RELAYS_RESISTOR = 2
 
 m_description = """
 This tool"""
 m_epilog = "battery-profiler.py v{:s}, Copyright (c) 2020, Chaim Zax <chaim.zax@gmail.com>" \
            .format(VERSION)
 m_tenma = Tenma()
-m_relays = None
+m_relays = [None, None, None, None]
+m_resistor = [0, 0, 0, 0]
 m_running = True
 m_device = None
 m_device_id = None
 m_device_type = None
 m_set_ovp = False
 m_pause_lock = threading.Lock()
+m_polling_delay = 1  # in seconds
 
 def signal_handler(sig, frame):
     global m_running
@@ -78,12 +86,12 @@ def get_command_line_arguments():
     parser.add_argument('-p', '--serial-port',
                         action='store', default='',
                         help="set the serial port (default '{}')".format(Tenma.DEFAULT_SERIAL_PORT_LINUX))
-    parser.add_argument('-K', '--skip-check',
+    parser.add_argument('-s', '--skip-check',
                         action='store_true', default=None,
                         help="skip sanity/device checking on start-up")
     parser.add_argument('-d', '--discharge',
                         action='store_true', default=None,
-                        help="discharge the battery (default charges the battery)")
+                        help="discharge the battery (default will charge battery)")
     parser.add_argument('-MV', '--max-voltage-power-supply',
                         action='store', default=Tenma.DEFAULT_POWER_SUPPLY_MAX_VOLTAGE, type=float,
                         help='(default {} V)'.format(Tenma.DEFAULT_POWER_SUPPLY_MAX_VOLTAGE))
@@ -127,7 +135,7 @@ def get_command_line_arguments():
     parser.add_argument('-DT', '--decay-time',
                         action='store', default=DEFAULT_DECAY_TIME, type=int,
                         help='(default {} s)'.format(DEFAULT_DECAY_TIME))
-    parser.add_argument('-l', '--lut-steps',
+    parser.add_argument('-L', '--lut-steps',
                         action='store', default=DEFAULT_LUT_STEPS, type=int,
                         help='(default {})'.format(DEFAULT_LUT_STEPS))
 
@@ -135,18 +143,19 @@ def get_command_line_arguments():
     return arguments
 
 
-def get_battery_voltage(channel=Tenma.CHANNEL_1):
+def get_battery_voltage(channel=Tenma.CHANNEL_1, discharge=False):
     supply_voltage = m_tenma.get_actual_voltage(channel)
     current = m_tenma.get_actual_current(channel)
 
-    if m_discharge == False or m_series_discharge_resistor == 0:
-        return supply_voltage - m_series_connection_resistance * current
-
-    return (m_series_discharge_resistor + m_series_connection_resistance) * current - supply_voltage
+    if discharge:
+        return ((m_resistor[RELAYS_ENABLE_BATTERY] + m_resistor[RELAYS_RESISTOR]) * current
+                - supply_voltage)
+    return (supply_voltage
+            - (m_resistor[RELAYS_ENABLE_BATTERY] + m_resistor[RELAYS_RESISTOR]) * current)
 
 
 def charge_battery():
-    global m_running
+    global m_running, m_set_ovp
 
     print('charging battery...')
     m_tenma.set_output(False)
@@ -155,21 +164,23 @@ def charge_battery():
     m_tenma.set_ocp(False)
     m_set_ovp = False
     m_tenma.set_ovp(m_set_ovp)
+
+    attach_battery(enable=True, reverse_polarity=False)
     m_tenma.set_output(True)
 
-    voltage = get_battery_voltage(Tenma.CHANNEL_1)
+    voltage = get_battery_voltage(Tenma.CHANNEL_1, discharge=m_discharge)
     while voltage < m_precharge_voltage_level and m_running:
         with m_pause_lock:
-            voltage = get_battery_voltage(Tenma.CHANNEL_1)
+            voltage = get_battery_voltage(Tenma.CHANNEL_1, discharge=m_discharge)
         time.sleep(1)
 
     if m_running:
         m_tenma.set_current(Tenma.CHANNEL_1, m_constant_current_level)
 
-    voltage = get_battery_voltage(Tenma.CHANNEL_1)
+    voltage = get_battery_voltage(Tenma.CHANNEL_1, discharge=m_discharge)
     while voltage < m_constant_voltage_level and m_running:
         with m_pause_lock:
-            voltage = get_battery_voltage(Tenma.CHANNEL_1)
+            voltage = get_battery_voltage(Tenma.CHANNEL_1, discharge=m_discharge)
             current = m_tenma.get_actual_current(Tenma.CHANNEL_1)
             # adjust voltage to make sure the applied battery voltage is as required
             m_tenma.set_voltage(Tenma.CHANNEL_1, m_constant_voltage_level +
@@ -186,14 +197,15 @@ def charge_battery():
         time.sleep(1)
 
     if m_running:
+        m_running = False
+        time.sleep(m_polling_delay)
         print('')
         print('battery fully charged')
-        m_running = False
     m_tenma.set_output(False)
 
 
 def discharge_battery():
-    global m_running
+    global m_running, m_set_ovp
 
     print('discharging battery...')
     m_tenma.set_output(False)
@@ -203,45 +215,118 @@ def discharge_battery():
         m_set_ovp = False
         m_tenma.set_ovp(m_set_ovp)
     else:
-        m_tenma.set_voltage(Tenma.CHANNEL_1, m_series_discharge_resistor * m_typical_discharge_current -
+        m_tenma.set_voltage(Tenma.CHANNEL_1,
+                            (m_series_discharge_resistor + m_series_connection_resistance)
+                            * m_typical_discharge_current -
                             m_constant_voltage_level +
                             (m_constant_voltage_level - m_soc_empty_voltage_level))
         m_set_ovp = True
         m_tenma.set_ovp(m_set_ovp)
     m_tenma.set_ocp(False)
+
+    attach_battery(enable=True, reverse_polarity=True)
     m_tenma.set_output(True)
 
-    voltage = get_battery_voltage(Tenma.CHANNEL_1)
+    voltage = get_battery_voltage(Tenma.CHANNEL_1, discharge=m_discharge)
     while voltage > m_soc_empty_voltage_level and m_running:
         with m_pause_lock:
-            #pass  # just continue if we are not paused
-            voltage = get_battery_voltage(Tenma.CHANNEL_1)
-            current = m_tenma.get_actual_current(Tenma.CHANNEL_1)
+            voltage = get_battery_voltage(Tenma.CHANNEL_1, discharge=m_discharge)
         time.sleep(1)
 
     if m_running:
+        m_running = False
+        time.sleep(m_polling_delay)
         print('')
         print('battery fully discharged')
-        m_running = False
     m_tenma.set_output(False)
 
 
-def attach_battery(enable):
-    global m_relays
+def attach_battery(enable=True, reverse_polarity=False):
+    global m_relays, m_resistor
 
-    if m_relays_connected == False:
+    if not m_relays_connected:
         return
-    if m_relays is None:
-        m_relays = DigitalOutput()
-        m_relays.openWaitForAttachment(5000)
+    if m_relays[0] is None:
+        for i in range(4):
+            m_relays[i] = DigitalOutput()
+            m_relays[i].setChannel(i)
+            m_relays[i].openWaitForAttachment(5000)
 
-    # make sure the NC connection is used, invert logic below otherwize
-    if enable:
-        m_relays.setDutyCycle(0)  # on
+    m_relays[RELAYS_ENABLE_BATTERY].setState(False)
+    time.sleep(0.1)
+
+    if reverse_polarity:
+        m_relays[RELAYS_POS_CON].setState(True)
+        m_relays[RELAYS_NEG_CON].setState(True)
+        m_relays[RELAYS_RESISTOR].setState(False)
+        m_resistor[RELAYS_RESISTOR] = m_series_discharge_resistor
     else:
-        m_relays.setDutyCycle(1)  # off
+        m_relays[RELAYS_POS_CON].setState(False)
+        m_relays[RELAYS_NEG_CON].setState(False)
+        m_relays[RELAYS_RESISTOR].setState(True)
+        m_resistor[RELAYS_RESISTOR] = 0
 
-    time.sleep(1)
+    m_relays[RELAYS_ENABLE_BATTERY].setState(enable)
+    if enable:
+        m_resistor[RELAYS_ENABLE_BATTERY] = m_series_connection_resistance
+    else:
+        m_resistor[RELAYS_ENABLE_BATTERY] = 1000000000
+
+    time.sleep(0.1)
+
+
+def open_file(charge=True):
+    suffix = ''
+    f = None
+    for i in range(1, 99):
+        try:
+            if charge:
+                file_name = 'charge-cycle' + suffix + '.csv'
+            else:
+                file_name = 'discharge-cycle' + suffix + '.csv'
+
+            f = open(file_name, 'x')
+            break
+
+        except FileExistsError:
+            suffix = '-{:02d}'.format(i)
+
+    if charge:
+        f.write('soc (%),llut (mV),hlut (mV)\n')
+    else:
+        f.write('soc (%),clut (mV)\n')
+    return f
+
+
+def measure_battery_voltage(charge=True, decay_time=0):
+    with m_pause_lock:
+        set_voltage = m_tenma.get_voltage(Tenma.CHANNEL_1)
+        set_current = m_tenma.get_current(Tenma.CHANNEL_1)
+
+        # give the battery time to settle
+        attach_battery(enable=False)
+        m_tenma.set_output(False)
+        time.sleep(decay_time)
+
+        # measure (open) voltage
+        m_tenma.set_ovp(False)
+        m_tenma.set_voltage(Tenma.CHANNEL_1, m_max_voltage_power_supply)
+        m_tenma.set_current(Tenma.CHANNEL_1, 0.001)
+        m_tenma.set_output(True)
+        attach_battery(enable=True, reverse_polarity=False)
+        time.sleep(1)  # give the power supply some time to settle
+        voltage = get_battery_voltage(Tenma.CHANNEL_1, discharge=False)
+        print('{:.2f} V, resume (dis)charging'.format(voltage))
+
+        # continue (dis)charging
+        attach_battery(enable=False)
+        m_tenma.set_voltage(Tenma.CHANNEL_1, set_voltage)
+        m_tenma.set_current(Tenma.CHANNEL_1, set_current)
+        attach_battery(enable=True, reverse_polarity=not charge)
+        clock = time.perf_counter()
+        time.sleep(1)  # give the power supply some time to settle
+        m_tenma.set_ovp(m_set_ovp)
+        return voltage, clock
 
 
 def profile_battery(charge=True):
@@ -250,25 +335,28 @@ def profile_battery(charge=True):
     if res != 0:
         sys.exit(-res)
 
+    f = open_file(charge)
+
     # measure state-of-charge and creat the look-up table
     total_capacity = m_total_capacity * m_nominal_voltage  # in W/h
     delta_capacity = total_capacity / m_lut_steps  # measure every 5 % increase
     actual_capacity = 0.0
-    delay = 1  # in seconds
     start_clock = time.perf_counter()
+    llut = 0
+    hlut = 0
+    clut = 0
 
     # the actual charging/discharging is done independently (in a separate thread)
     if charge:
         charger = threading.Thread(target=charge_battery)
     else:
         charger = threading.Thread(target=discharge_battery)
-    attach_battery(True)  # make sure the battery is connected
     charger.start()
 
     prev_clock = start_clock
     prev_capacity = actual_capacity
     while m_running:
-        voltage = get_battery_voltage(Tenma.CHANNEL_1)
+        voltage = get_battery_voltage(Tenma.CHANNEL_1, discharge=m_discharge)
         if voltage == 0:
             time.sleep(0.1)
             continue  # charging/discharging not yet started
@@ -286,33 +374,17 @@ def profile_battery(charge=True):
             print('capacity {:.0f} mW/h ({:.0f} %), pausing for {} seconds'
                   .format(actual_capacity * 1000, 100 * actual_capacity / total_capacity, m_decay_time))
             prev_capacity = actual_capacity
-            with m_pause_lock:
-                set_current = m_tenma.get_current(Tenma.CHANNEL_1)
-                m_tenma.set_output(False)
-                attach_battery(False)
-                # give the battery time to settle
-                time.sleep(m_decay_time)
-                # measure (open) voltage
-                m_tenma.set_ovp(False)
-                m_tenma.set_current(Tenma.CHANNEL_1, m_precharge_current_level)
-                attach_battery(True)
-                m_tenma.set_output(True)
-                time.sleep(1)  # give the power supply some time to settle
-                voltage = get_battery_voltage(Tenma.CHANNEL_1)
-                print('{:.2f} V, resume (dis)charging'.format(voltage))
-                # continue (dis)charging
-                m_tenma.set_current(Tenma.CHANNEL_1, set_current)
-                prev_clock = time.perf_counter()
-                time.sleep(1)  # give the power supply some time to settle
-                m_tenma.set_ovp(m_set_ovp)
+            voltage, prev_clock = measure_battery_voltage(charge=charge, decay_time=m_decay_time)
 
-        time.sleep(delay)
+        time.sleep(m_polling_delay)
 
     print('')
     charger.join()
     m_tenma.set_output(False)
-    if m_relays is None:
-        m_relays.close()
+    m_tenma.close()
+    if m_relays[0] is not None:
+        for i in range(3):
+            m_relays[i].close()
 
 
 # initialize defaults
@@ -442,4 +514,4 @@ if m_series_discharge_resistor > 0:
        m_max_voltage_power_supply:
         print('WARNING: the series-discharge-resistor is to large to create the correct voltage on the battery')
 
-profile_battery(charge=True)
+profile_battery(charge=not m_discharge)

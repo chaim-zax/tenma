@@ -84,8 +84,8 @@ class Tenma:
                 if platform.system() == 'Windows':
                     print("ERROR: No power supply found (use the '-p COM1' option and provide the correct port)")
                 else:
-                    print("ERROR: No power supply found (use the '-p /dev/ttyUSB0' option and provide the correct port, "
-                          "or install the udev rule as described in the INSTALL file)")
+                    print("ERROR: No power supply found (use the '-p /dev/ttyUSB0' option and provide the correct port,"
+                          " or install the udev rule as described in the INSTALL file)")
             self.device = None
             return -1
 
