@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 #
-# Copyright (C) 2020, Chaim Zax <chaim.zax@gmail.com>
+# Copyright (C) 2021, Chaim Zax <chaim.zax@gmail.com>
 #
 # version: 0.1
 #
@@ -39,7 +39,7 @@ class Tenma:
 
     def _write(self, data):
         res = self.device.write(data.encode('ascii'))
-        time.sleep(0.05)
+        time.sleep(0.1)
         return res
 
     def _read(self, length):
@@ -57,14 +57,23 @@ class Tenma:
             print('ERROR: no power supply connected')
             return None
 
-        self._write(cmd)
+        with self.mutex:
+            self._write(cmd)
 
-    def _receive_command(self, length=100):
+    def _receive_command(self, cmd, length=100):
         if self.device is None:
             print('ERROR: no power supply connected')
             return None
 
-        return self._read(length)
+        res = ''
+        while res == '':
+            with self.mutex:
+                self._write(cmd)
+                res = self._read(length)
+        return res
+
+    def _receive_number(self, cmd, length=100):
+        return float(self._receive_command(cmd, length))
 
     def set_verbose_level(self, verbose_level):
         self.verbose_level = verbose_level
@@ -126,8 +135,7 @@ class Tenma:
         Example:ISET1:2.225
         Sets the CH1 output current to 2.225A
         """
-        with self.mutex:
-            self._send_command('ISET{}:{:05.3f}'.format(channel, current))
+        self._send_command('ISET{}:{:05.3f}'.format(channel, current))
 
     def get_current(self, channel=1):
         """
@@ -136,10 +144,7 @@ class Tenma:
         Example: ISET1?
         Returns the CH1 output current setting.
         """
-        with self.mutex:
-            self._send_command('ISET{}?'.format(channel))
-            res = float(self._receive_command(6))
-        return res
+        return self._receive_number('ISET{}?'.format(channel), 6)
 
     def set_voltage(self, channel=1, voltage=0):
         """
@@ -148,8 +153,7 @@ class Tenma:
         Example VSET1:20.50
         Sets the CH1 voltage to 20.50V
         """
-        with self.mutex:
-            self._send_command('VSET{}:{:05.2f}'.format(channel, voltage))
+        self._send_command('VSET{}:{:05.2f}'.format(channel, voltage))
 
     def get_voltage(self, channel=1):
         """
@@ -158,10 +162,7 @@ class Tenma:
         Example VSET1?
         Returns the CH1 voltage setting
         """
-        with self.mutex:
-            self._send_command('VSET{}?'.format(channel))
-            res = float(self._receive_command(5))
-        return res
+        return self._receive_number('VSET{}?'.format(channel), 5)
 
     def get_actual_current(self, channel=1):
         """
@@ -170,10 +171,7 @@ class Tenma:
         Example IOUT1?
         Returns the CH1 output current
         """
-        with self.mutex:
-            self._send_command('IOUT{}?'.format(channel))
-            res = float(self._receive_command(5))
-        return res
+        return self._receive_number('IOUT{}?'.format(channel), 5)
 
     def get_actual_voltage(self, channel=1):
         """
@@ -182,10 +180,7 @@ class Tenma:
         Example VOUT1?
         Returns the CH1 output voltage
         """
-        with self.mutex:
-            self._send_command('VOUT{}?'.format(channel))
-            res = float(self._receive_command(5))
-        return res
+        return self._receive_number('VOUT{}?'.format(channel), 5)
 
     def set_beep(self, on):
         """
@@ -193,11 +188,10 @@ class Tenma:
         Description:Turns on or off the beep. Boolean: boolean logic.
         Example BEEP1 Turns on the beep.
         """
-        with self.mutex:
-            if on:
-                self._send_command('BEEP1')
-            else:
-                self._send_command('BEEP0')
+        if on:
+            self._send_command('BEEP1')
+        else:
+            self._send_command('BEEP0')
 
     def set_output(self, on):
         """
@@ -206,11 +200,10 @@ class Tenma:
         Boolean:0 OFF,1 ON
         Example: OUT1 Turns on the output
         """
-        with self.mutex:
-            if on:
-                self._send_command('OUT1')
-            else:
-                self._send_command('OUT0')
+        if on:
+            self._send_command('OUT1')
+        else:
+            self._send_command('OUT0')
 
     def get_status(self):
         """
@@ -233,12 +226,12 @@ class Tenma:
         with self.mutex:
             self._write('STATUS?')
             status = self._read_bytes(1)[0]
-            ch1 = (status & 0b10000000) >> 7
-            ch2 = (status & 0b01000000) >> 6
-            tracking = (status & 0b00110000) >> 4
-            beep = (status & 0b00001000) >> 3
-            lock = (status & 0b00000100) >> 2
-            output = (status & 0b00000010) >> 1
+        ch1 = (status & 0b10000000) >> 7
+        ch2 = (status & 0b01000000) >> 6
+        tracking = (status & 0b00110000) >> 4
+        beep = (status & 0b00001000) >> 3
+        lock = (status & 0b00000100) >> 2
+        output = (status & 0b00000010) >> 1
         return {'ch1': ch1, 'ch2': ch2, 'tracking': tracking, 'beep': beep, 'lock': lock, 'output': output}
 
     def get_device_id(self):
@@ -248,14 +241,7 @@ class Tenma:
         Example *IDN?
         Contents TENMA 72‐2535 V2.0 (Manufacturer, model name,).
         """
-        if self.device is None:
-            print('ERROR: no power supply connected')
-            return None
-
-        with self.mutex:
-            self._write('*IDN?')
-            res = self._read(18)   # e.g. 'TENMA 72-2540 V2.1'
-        return res
+        return self._receive_command('*IDN?', 18)
 
     def recall(self, nr):
         """
@@ -264,8 +250,7 @@ class Tenma:
         NR1 1 – 5: Memory number 1 to 5
         Example RCL1 Recalls the panel setting stored in memory number 1
         """
-        with self.mutex:
-            self._send_command('RCL{}'.format(nr))
+        self._send_command('RCL{}'.format(nr))
 
     def store(self, nr):
         """
@@ -274,9 +259,7 @@ class Tenma:
         NR1 1 – 5: Memory number 1 to 5
         Example: SAV1 Stores the panel setting in memory number 1
         """
-        with self.mutex:
-            self._send_command('SAV{}'.format(nr))
-            time.sleep(0.1)
+        self._send_command('SAV{}'.format(nr))
 
     def set_ocp(self, on):
         """
@@ -285,11 +268,10 @@ class Tenma:
         Boolean: 0 OFF, 1 ON
         Example: OCP1 Turns on the OCP
         """
-        with self.mutex:
-            if on:
-                self._send_command('OCP1')
-            else:
-                self._send_command('OCP0')
+        if on:
+            self._send_command('OCP1')
+        else:
+            self._send_command('OCP0')
 
     def set_ovp(self, on):
         """
@@ -298,8 +280,7 @@ class Tenma:
         Boolean: 0 OFF, 1 ON
         Example: OVP1 Turns on the OVP
         """
-        with self.mutex:
-            if on:
-                self._send_command('OVP1')
-            else:
-                self._send_command('OVP0')
+        if on:
+            self._send_command('OVP1')
+        else:
+            self._send_command('OVP0')
