@@ -2,6 +2,7 @@ precharge_voltage_level = 3.00
 precharge_current_level = 0.500
 constant_voltage_level = 4.20
 constant_current_level = 5.000
+constant_current_grace_period = 5
 end_of_current_level = 1.400
 soc_empty_voltage_level = 3.10
 series_connection_resistance = 0.05

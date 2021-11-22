@@ -15,6 +15,7 @@ import time
 try:
     from Phidget22.Phidget import *
     from Phidget22.Devices.DigitalOutput import *
+
     m_relays_connected = True
 except ImportError as error:
     print('disabling relays, Phidget library not found (see https://www.phidgets.com/docs/Language_-_Python)')
@@ -29,12 +30,13 @@ DEFAULT_PRECHARGE_VOLTAGE_LEVEL = 3.00
 DEFAULT_PRECHARGE_CURRENT_LEVEL = 0.010
 DEFAULT_CONSTANT_VOLTAGE_LEVEL = 4.20
 DEFAULT_CONSTANT_CURRENT_LEVEL = 0.250  # between 1 and 0.5 C (total-capacity)
+DEFAULT_CONSTANT_CURRENT_GRACE_PERIOD = 0
 DEFAULT_END_OF_CURRENT_LEVEL = 0.025
 DEFAULT_SOC_EMPTY_VOLTAGE_LEVEL = 3.10
 DEFAULT_MAX_CURRENT = 1.000
 DEFAULT_TYPICAL_DISCHARGE_CURRENT = 0.036
 DEFAULT_SERIES_CONNECTION_RESISTANCE = 0.00  # increase if measured voltage during charge is too high
-DEFAULT_SERIES_DISCHARGE_RESISTOR = 100  # increase if measured voltage during discharge is too low
+DEFAULT_SERIES_DISCHARGE_RESISTOR = 150  # increase if measured voltage during discharge is too low
 
 RELAYS_NEG_CON = 0
 RELAYS_POS_CON = 3
@@ -44,7 +46,7 @@ RELAYS_RESISTOR = 2
 m_description = """
 This tool"""
 m_epilog = "battery-profiler.py v{:s}, Copyright (c) 2021, Chaim Zax <chaim.zax@gmail.com>" \
-           .format(VERSION)
+    .format(VERSION)
 
 # initialize defaults
 m_verbose_level = Tenma.DEFAULT_VERBOSE_LEVEL
@@ -60,6 +62,7 @@ m_precharge_voltage_level = DEFAULT_PRECHARGE_VOLTAGE_LEVEL
 m_precharge_current_level = DEFAULT_PRECHARGE_CURRENT_LEVEL
 m_constant_voltage_level = DEFAULT_CONSTANT_VOLTAGE_LEVEL
 m_constant_current_level = DEFAULT_CONSTANT_CURRENT_LEVEL
+m_constant_current_grace_period = DEFAULT_CONSTANT_CURRENT_GRACE_PERIOD
 m_end_of_current_level = DEFAULT_END_OF_CURRENT_LEVEL
 m_soc_empty_voltage_level = DEFAULT_SOC_EMPTY_VOLTAGE_LEVEL
 m_max_current = DEFAULT_MAX_CURRENT
@@ -81,7 +84,7 @@ def signal_handler(sig, frame):
     print('')
     print('aborting...')
     m_running = False
-    #m_tenma.set_output(False)
+    # m_tenma.set_output(False)
     sys.exit(0)
 
 
@@ -90,57 +93,84 @@ def get_command_line_arguments():
 
     parser.add_argument("-v", "--version", action='version', version=VERSION)
     parser.add_argument('-V', '--verbose-level', action='store', type=int, default=None,
-                        help='set the verbose level, where 1=DEBUG, 2=INFO, 3=WARNING (default),' +
+                        help='Set the verbose level, where 1=DEBUG, 2=INFO, 3=WARNING (default),' +
                              ' 4=ERROR, 5=CRITICAL')
     parser.add_argument('-c', '--config',
                         action='store', default=None,
-                        help='load command line options from a configuration file')
+                        help='Load command line options from a configuration file')
     parser.add_argument('-b', '--baud-rate',
                         action='store', default=None, type=int,
-                        help='set the baud-rate of the serial port (default {})'
+                        help='Set the baud-rate of the serial port (default {})'
                         .format(Tenma.DEFAULT_BAUD_RATE))
     parser.add_argument('-p', '--serial-port',
                         action='store', default=None,
-                        help="set the serial port (default '{}')".format(Tenma.DEFAULT_SERIAL_PORT_LINUX))
+                        help="Set the serial port (default '{}')"
+                        .format(Tenma.DEFAULT_SERIAL_PORT_LINUX))
     parser.add_argument('-s', '--skip-check',
                         action='store_true', default=None,
-                        help="skip sanity/device checking on start-up")
+                        help="Skip sanity/device checking on start-up")
     parser.add_argument('-d', '--discharge',
                         action='store_true', default=None,
-                        help="discharge the battery (default will charge battery)")
+                        help="Discharge the battery (default will charge battery)")
     parser.add_argument('-MV', '--max-voltage-power-supply',
                         action='store', default=None, type=float,
-                        help='(default {} V)'.format(Tenma.DEFAULT_POWER_SUPPLY_MAX_VOLTAGE))
+                        help='Maximum voltage the current PSU can deliver (default {} V)'
+                        .format(Tenma.DEFAULT_POWER_SUPPLY_MAX_VOLTAGE))
     parser.add_argument('-PV', '--precharge-voltage-level',
                         action='store', default=None, type=float,
-                        help='(default {} V)'.format(DEFAULT_PRECHARGE_VOLTAGE_LEVEL))
+                        help='Voltage threshold used to initially pre-charge the battery with the ' +
+                             'precharge-current-level before going to the constant-current stage. Pre-charge is the ' +
+                             'first phase were the battery is checked for proper behavior. (default {} V)'
+                        .format(DEFAULT_PRECHARGE_VOLTAGE_LEVEL))
     parser.add_argument('-PC', '--precharge-current-level',
                         action='store', default=None, type=float,
-                        help='(default {} A)'.format(DEFAULT_PRECHARGE_CURRENT_LEVEL))
-    parser.add_argument('-CV', '--constant-voltage-level',
-                        action='store', default=None, type=float,
-                        help='(default {} V)'.format(DEFAULT_CONSTANT_VOLTAGE_LEVEL))
+                        help='Current used during the pre-charge phase. The pre-charge stage continues until the ' +
+                             'voltage reaches the precharge-voltage-level (default {} A)'
+                        .format(DEFAULT_PRECHARGE_CURRENT_LEVEL))
     parser.add_argument('-CC', '--constant-current-level',
                         action='store', default=None, type=float,
-                        help='(default {} A)'.format(DEFAULT_CONSTANT_CURRENT_LEVEL))
+                        help='Current used to charge the battery until it reaches the constant-voltage-level. The ' +
+                             'constant-current phase is the second stage when charging the battery (default {} A)'
+                        .format(DEFAULT_CONSTANT_CURRENT_LEVEL))
+    parser.add_argument('-CG', '--constant-current-grace-period',
+                        action='store', default=None, type=int,
+                        help='Period in seconds to startup the constant-current-level without checking the ' +
+                             'thresholds. Large capacity batteries might take a few seconds to settle before the ' +
+                             'actual charging current is reached (default {} s)'
+                        .format(DEFAULT_CONSTANT_CURRENT_GRACE_PERIOD))
+    parser.add_argument('-CV', '--constant-voltage-level',
+                        action='store', default=None, type=float,
+                        help='Voltage from which the charger goes from constant-current to constant-voltage. The ' +
+                             'constant-voltage phase is the third stage when charging the battery (default {} V)'
+                        .format(DEFAULT_CONSTANT_VOLTAGE_LEVEL))
     parser.add_argument('-EC', '--end-of-current-level',
                         action='store', default=None, type=float,
-                        help='(default {} A)'.format(DEFAULT_END_OF_CURRENT_LEVEL))
+                        help='Current threshold to determine if the battery is full when in the final ' +
+                             '(constant-voltage) charging stage (default {} A)'
+                        .format(DEFAULT_END_OF_CURRENT_LEVEL))
     parser.add_argument('-EV', '--soc-empty-voltage-level',
                         action='store', default=None, type=float,
-                        help='(default {} V)'.format(DEFAULT_SOC_EMPTY_VOLTAGE_LEVEL))
+                        help='Voltage threshold to determine when the discharge cycle has ended (default {} V)'
+                        .format(DEFAULT_SOC_EMPTY_VOLTAGE_LEVEL))
     parser.add_argument('-MC', '--max-current',
                         action='store', default=None, type=float,
-                        help='(default {} A)'.format(DEFAULT_MAX_CURRENT))
+                        help='Extra safety check to make sure the configuration set never goes beyond this current. ' +
+                             'Increase for large capacity batteries to support fast charging (default {} A)'
+                        .format(DEFAULT_MAX_CURRENT))
     parser.add_argument('-DC', '--typical-discharge-current',
                         action='store', default=None, type=float,
-                        help='(default {} A)'.format(DEFAULT_TYPICAL_DISCHARGE_CURRENT))
+                        help='Current used for discharging (default {} A)'
+                        .format(DEFAULT_TYPICAL_DISCHARGE_CURRENT))
     parser.add_argument('-CR', '--series-connection-resistance',
                         action='store', default=None, type=float,
-                        help='(default {} Ohm)'.format(DEFAULT_SERIES_CONNECTION_RESISTANCE))
+                        help='Resistance of the wires when charging or discharging. Used when large currents are ' +
+                             'used, to compensate for the voltage drop between PSU and actual battery voltage. Tune ' +
+                             'by measuring the voltage directly on the battery (default {} Ohm)'
+                        .format(DEFAULT_SERIES_CONNECTION_RESISTANCE))
     parser.add_argument('-DR', '--series-discharge-resistor',
                         action='store', default=None, type=float,
-                        help='(default {} Ohm)'.format(DEFAULT_SERIES_DISCHARGE_RESISTOR))
+                        help='Resistance used for discharging (default {} Ohm)'
+                        .format(DEFAULT_SERIES_DISCHARGE_RESISTOR))
 
     arguments = parser.parse_args()
     return arguments
@@ -174,31 +204,35 @@ def charge_battery():
     # pre-charge phase
     voltage = get_battery_voltage(Tenma.CHANNEL_1, discharge=m_discharge)
     while voltage < m_precharge_voltage_level and m_running:
-        voltage = get_battery_voltage(Tenma.CHANNEL_1, discharge=m_discharge)
         time.sleep(1)
+        voltage = get_battery_voltage(Tenma.CHANNEL_1, discharge=m_discharge)
 
     if m_running:
         m_tenma.set_current(Tenma.CHANNEL_1, m_constant_current_level)
 
-    # constand current phase
+    # constant current phase
     voltage = get_battery_voltage(Tenma.CHANNEL_1, discharge=m_discharge)
     current = m_tenma.get_actual_current(Tenma.CHANNEL_1)
-    while voltage < m_constant_voltage_level and current >= (m_constant_current_level * 0.95) and m_running:
+    grace_period = 0
+    while ((voltage < m_constant_voltage_level and
+            current >= (m_constant_current_level * 0.95)) or
+           grace_period < m_constant_current_grace_period) and m_running:
+        time.sleep(1)
         voltage = get_battery_voltage(Tenma.CHANNEL_1, discharge=m_discharge)
         current = m_tenma.get_actual_current(Tenma.CHANNEL_1)
         # adjust voltage to make sure the applied battery voltage is as required
         m_tenma.set_voltage(Tenma.CHANNEL_1, m_constant_voltage_level +
                             m_series_connection_resistance * current)
-        time.sleep(1)
+        grace_period += 1
 
-    # constand voltage phase
+    # constant voltage phase
     current = m_tenma.get_actual_current(Tenma.CHANNEL_1)
     while current > m_end_of_current_level and m_running:
+        time.sleep(1)
         current = m_tenma.get_actual_current(Tenma.CHANNEL_1)
         # adjust voltage to make sure the applied battery voltage is as required
         m_tenma.set_voltage(Tenma.CHANNEL_1, m_constant_voltage_level +
                             m_series_connection_resistance * current)
-        time.sleep(1)
 
     if m_running:
         m_running = False
@@ -248,7 +282,7 @@ def attach_battery(enable=True, reverse_polarity=False):
                 m_relays[i].openWaitForAttachment(5000)
 
     except PhidgetException:
-        print('no Phidgets connected, disabling support')
+        print('no Phidgets connected, disabling relays support')
         for i in range(4):
             m_relays[i] = None
         m_relays_connected = False
@@ -275,7 +309,6 @@ def attach_battery(enable=True, reverse_polarity=False):
         m_resistor[RELAYS_ENABLE_BATTERY] = 1000000000
 
     time.sleep(0.1)
-
 
 
 # get all command line options
@@ -333,6 +366,10 @@ if args.constant_current_level is not None:
     m_constant_current_level = args.constant_current_level
 elif 'constant_current_level' in config_args:
     m_constant_current_level = config_args['constant_current_level']
+if args.constant_current_grace_period is not None:
+    m_constant_current_grace_period = args.constant_current_grace_period
+elif 'constant_current_grace_period' in config_args:
+    m_constant_current_grace_period = config_args['constant_current_grace_period']
 if args.end_of_current_level is not None:
     m_end_of_current_level = args.end_of_current_level
 elif 'end_of_current_level' in config_args:
@@ -371,22 +408,23 @@ if platform.system() == 'Windows':
 signal.signal(signal.SIGINT, signal_handler)
 
 # print and check arguments/configuration
-print('- max voltage power supply     = {} V'.format(m_max_voltage_power_supply))
-print('- pre-charge voltage level     = {:4.2f} V'.format(m_precharge_voltage_level))
-print('- pre-charge current level     = {:.0f} mA'.format(m_precharge_current_level * 1000))
-print('- constant voltage level       = {:4.2f} V'.format(m_constant_voltage_level))
-print('- constant current level       = {:.0f} mA'.format(m_constant_current_level * 1000))
-print('- end of current level         = {:.0f} mA'.format(m_end_of_current_level * 1000))
-print('- soc empty voltage level      = {:4.2f} V'.format(m_soc_empty_voltage_level))
-print('- max current                  = {:.0f} mA'.format(m_max_current * 1000))
-print('- typical discharge current    = {:.0f} mA'.format(m_typical_discharge_current * 1000))
-print('- series connection resistance = {} Ohm'.format(m_series_connection_resistance))
-print('- series discharge resistor    = {} Ohm'.format(m_series_discharge_resistor))
+print('- max voltage power supply      = {} V'.format(m_max_voltage_power_supply))
+print('- pre-charge voltage level      = {:4.2f} V'.format(m_precharge_voltage_level))
+print('- pre-charge current level      = {:.0f} mA'.format(m_precharge_current_level * 1000))
+print('- constant voltage level        = {:4.2f} V'.format(m_constant_voltage_level))
+print('- constant current level        = {:.0f} mA'.format(m_constant_current_level * 1000))
+print('- constant current grace period = {:d} s'.format(m_constant_current_grace_period))
+print('- end of current level          = {:.0f} mA'.format(m_end_of_current_level * 1000))
+print('- soc empty voltage level       = {:4.2f} V'.format(m_soc_empty_voltage_level))
+print('- max current                   = {:.0f} mA'.format(m_max_current * 1000))
+print('- typical discharge current     = {:.0f} mA'.format(m_typical_discharge_current * 1000))
+print('- series connection resistance  = {} Ohm'.format(m_series_connection_resistance))
+print('- series discharge resistor     = {} Ohm'.format(m_series_discharge_resistor))
 
 if m_precharge_current_level > m_max_current or \
-   m_constant_current_level > m_max_current or \
-   m_end_of_current_level > m_max_current or \
-   m_typical_discharge_current > m_max_current:
+        m_constant_current_level > m_max_current or \
+        m_end_of_current_level > m_max_current or \
+        m_typical_discharge_current > m_max_current:
     print('ERROR: one of the current settings exceeds the maximum allowed current ({:.0f} mA)'
           .format(m_max_current * 1000))
     sys.exit(-1)
@@ -396,7 +434,7 @@ if m_series_discharge_resistor > 0:
         print('WARNING: the series-discharge-resistor is not large enough to create a positive voltage '
               'on the power supply')
     if m_series_discharge_resistor * m_typical_discharge_current - m_soc_empty_voltage_level > \
-       m_max_voltage_power_supply:
+            m_max_voltage_power_supply:
         print('WARNING: the series-discharge-resistor is to large to create the correct voltage on the battery')
 
 # all commands below require a connected power supply
