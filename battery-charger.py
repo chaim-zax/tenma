@@ -33,8 +33,8 @@ DEFAULT_END_OF_CURRENT_LEVEL = 0.025
 DEFAULT_SOC_EMPTY_VOLTAGE_LEVEL = 3.10
 DEFAULT_MAX_CURRENT = 1.000
 DEFAULT_TYPICAL_DISCHARGE_CURRENT = 0.036
-DEFAULT_SERIES_CONNECTION_RESISTANCE = 0.94  # increase if measured voltage during charge is too high
-DEFAULT_SERIES_DISCHARGE_RESISTOR = 118.8 + 7.75  # increase if measured voltage during discharge is too low
+DEFAULT_SERIES_CONNECTION_RESISTANCE = 0.00  # increase if measured voltage during charge is too high
+DEFAULT_SERIES_DISCHARGE_RESISTOR = 100  # increase if measured voltage during discharge is too low
 
 RELAYS_NEG_CON = 0
 RELAYS_POS_CON = 3
@@ -45,6 +45,28 @@ m_description = """
 This tool"""
 m_epilog = "battery-profiler.py v{:s}, Copyright (c) 2021, Chaim Zax <chaim.zax@gmail.com>" \
            .format(VERSION)
+
+# initialize defaults
+m_verbose_level = Tenma.DEFAULT_VERBOSE_LEVEL
+if platform.system() == 'Windows':
+    m_serial_port = Tenma.DEFAULT_SERIAL_PORT_WIN
+else:
+    m_serial_port = Tenma.DEFAULT_SERIAL_PORT_LINUX
+m_baud_rate = Tenma.DEFAULT_BAUD_RATE
+m_skip_check = Tenma.DEFAULT_SKIP_CHECK
+m_discharge = False
+m_max_voltage_power_supply = Tenma.DEFAULT_POWER_SUPPLY_MAX_VOLTAGE
+m_precharge_voltage_level = DEFAULT_PRECHARGE_VOLTAGE_LEVEL
+m_precharge_current_level = DEFAULT_PRECHARGE_CURRENT_LEVEL
+m_constant_voltage_level = DEFAULT_CONSTANT_VOLTAGE_LEVEL
+m_constant_current_level = DEFAULT_CONSTANT_CURRENT_LEVEL
+m_end_of_current_level = DEFAULT_END_OF_CURRENT_LEVEL
+m_soc_empty_voltage_level = DEFAULT_SOC_EMPTY_VOLTAGE_LEVEL
+m_max_current = DEFAULT_MAX_CURRENT
+m_typical_discharge_current = DEFAULT_TYPICAL_DISCHARGE_CURRENT
+m_series_connection_resistance = DEFAULT_SERIES_CONNECTION_RESISTANCE
+m_series_discharge_resistor = DEFAULT_SERIES_DISCHARGE_RESISTOR
+
 m_tenma = Tenma()
 m_relays = [None, None, None, None]
 m_resistor = [0, 0, 0, 0]
@@ -74,11 +96,11 @@ def get_command_line_arguments():
                         action='store', default=None,
                         help='load command line options from a configuration file')
     parser.add_argument('-b', '--baud-rate',
-                        action='store', default=Tenma.DEFAULT_BAUD_RATE, type=int,
+                        action='store', default=None, type=int,
                         help='set the baud-rate of the serial port (default {})'
                         .format(Tenma.DEFAULT_BAUD_RATE))
     parser.add_argument('-p', '--serial-port',
-                        action='store', default='',
+                        action='store', default=None,
                         help="set the serial port (default '{}')".format(Tenma.DEFAULT_SERIAL_PORT_LINUX))
     parser.add_argument('-s', '--skip-check',
                         action='store_true', default=None,
@@ -87,37 +109,37 @@ def get_command_line_arguments():
                         action='store_true', default=None,
                         help="discharge the battery (default will charge battery)")
     parser.add_argument('-MV', '--max-voltage-power-supply',
-                        action='store', default=Tenma.DEFAULT_POWER_SUPPLY_MAX_VOLTAGE, type=float,
+                        action='store', default=None, type=float,
                         help='(default {} V)'.format(Tenma.DEFAULT_POWER_SUPPLY_MAX_VOLTAGE))
     parser.add_argument('-PV', '--precharge-voltage-level',
-                        action='store', default=DEFAULT_PRECHARGE_VOLTAGE_LEVEL, type=float,
+                        action='store', default=None, type=float,
                         help='(default {} V)'.format(DEFAULT_PRECHARGE_VOLTAGE_LEVEL))
     parser.add_argument('-PC', '--precharge-current-level',
-                        action='store', default=DEFAULT_PRECHARGE_CURRENT_LEVEL, type=float,
+                        action='store', default=None, type=float,
                         help='(default {} A)'.format(DEFAULT_PRECHARGE_CURRENT_LEVEL))
     parser.add_argument('-CV', '--constant-voltage-level',
-                        action='store', default=DEFAULT_CONSTANT_VOLTAGE_LEVEL, type=float,
+                        action='store', default=None, type=float,
                         help='(default {} V)'.format(DEFAULT_CONSTANT_VOLTAGE_LEVEL))
     parser.add_argument('-CC', '--constant-current-level',
-                        action='store', default=DEFAULT_CONSTANT_CURRENT_LEVEL, type=float,
+                        action='store', default=None, type=float,
                         help='(default {} A)'.format(DEFAULT_CONSTANT_CURRENT_LEVEL))
     parser.add_argument('-EC', '--end-of-current-level',
-                        action='store', default=DEFAULT_END_OF_CURRENT_LEVEL, type=float,
+                        action='store', default=None, type=float,
                         help='(default {} A)'.format(DEFAULT_END_OF_CURRENT_LEVEL))
     parser.add_argument('-EV', '--soc-empty-voltage-level',
-                        action='store', default=DEFAULT_SOC_EMPTY_VOLTAGE_LEVEL, type=float,
+                        action='store', default=None, type=float,
                         help='(default {} V)'.format(DEFAULT_SOC_EMPTY_VOLTAGE_LEVEL))
     parser.add_argument('-MC', '--max-current',
-                        action='store', default=DEFAULT_MAX_CURRENT, type=float,
+                        action='store', default=None, type=float,
                         help='(default {} A)'.format(DEFAULT_MAX_CURRENT))
     parser.add_argument('-DC', '--typical-discharge-current',
-                        action='store', default=DEFAULT_TYPICAL_DISCHARGE_CURRENT, type=float,
+                        action='store', default=None, type=float,
                         help='(default {} A)'.format(DEFAULT_TYPICAL_DISCHARGE_CURRENT))
     parser.add_argument('-CR', '--series-connection-resistance',
-                        action='store', default=DEFAULT_SERIES_CONNECTION_RESISTANCE, type=float,
+                        action='store', default=None, type=float,
                         help='(default {} Ohm)'.format(DEFAULT_SERIES_CONNECTION_RESISTANCE))
     parser.add_argument('-DR', '--series-discharge-resistor',
-                        action='store', default=DEFAULT_SERIES_DISCHARGE_RESISTOR, type=float,
+                        action='store', default=None, type=float,
                         help='(default {} Ohm)'.format(DEFAULT_SERIES_DISCHARGE_RESISTOR))
 
     arguments = parser.parse_args()
@@ -214,15 +236,23 @@ def discharge_battery():
 
 
 def attach_battery(enable=True, reverse_polarity=False):
-    global m_relays, m_resistor
+    global m_relays, m_resistor, m_relays_connected
 
     if not m_relays_connected:
         return
-    if m_relays[0] is None:
+    try:
+        if m_relays[0] is None:
+            for i in range(4):
+                m_relays[i] = DigitalOutput()
+                m_relays[i].setChannel(i)
+                m_relays[i].openWaitForAttachment(5000)
+
+    except PhidgetException:
+        print('no Phidgets connected, disabling support')
         for i in range(4):
-            m_relays[i] = DigitalOutput()
-            m_relays[i].setChannel(i)
-            m_relays[i].openWaitForAttachment(5000)
+            m_relays[i] = None
+        m_relays_connected = False
+        return
 
     m_relays[RELAYS_ENABLE_BATTERY].setState(False)
     time.sleep(0.1)
@@ -247,72 +277,86 @@ def attach_battery(enable=True, reverse_polarity=False):
     time.sleep(0.1)
 
 
-# initialize defaults
-m_verbose_level = Tenma.DEFAULT_VERBOSE_LEVEL
-if platform.system() == 'Windows':
-    m_serial_port = Tenma.DEFAULT_SERIAL_PORT_WIN
-else:
-    m_serial_port = Tenma.DEFAULT_SERIAL_PORT_LINUX
-m_baud_rate = Tenma.DEFAULT_BAUD_RATE
-m_skip_check = Tenma.DEFAULT_SKIP_CHECK
-m_discharge = False
-m_max_voltage_power_supply = Tenma.DEFAULT_POWER_SUPPLY_MAX_VOLTAGE
-m_precharge_voltage_level = DEFAULT_PRECHARGE_VOLTAGE_LEVEL
-m_precharge_current_level = DEFAULT_PRECHARGE_CURRENT_LEVEL
-m_constant_voltage_level = DEFAULT_CONSTANT_VOLTAGE_LEVEL
-m_constant_current_level = DEFAULT_CONSTANT_CURRENT_LEVEL
-m_end_of_current_level = DEFAULT_END_OF_CURRENT_LEVEL
-m_soc_empty_voltage_level = DEFAULT_SOC_EMPTY_VOLTAGE_LEVEL
-m_max_current = DEFAULT_MAX_CURRENT
-m_typical_discharge_current = DEFAULT_TYPICAL_DISCHARGE_CURRENT
-m_series_connection_resistance = DEFAULT_SERIES_CONNECTION_RESISTANCE
-m_series_discharge_resistor = DEFAULT_SERIES_DISCHARGE_RESISTOR
 
 # get all command line options
 args = get_command_line_arguments()
+a_globals = {}
+config_args = {}
 
 # load configuration file(s)
 home = os.path.expanduser("~")
 default_config = DEFAULT_CONFIG.replace('~', home)
 if os.path.isfile(default_config):
-    exec(open(default_config).read())
+    exec(open(default_config).read(), a_globals, config_args)
 
 if args.config is not None and os.path.isfile(args.config):
-    exec(open(args.config).read())
+    exec(open(args.config).read(), a_globals, config_args)
 
 # handle individual commands
 if args.verbose_level is not None:
     m_verbose_level = args.verbose_level
+elif 'verbose_level' in config_args:
+    m_verbose_level = config_args['verbose_level']
 if args.serial_port is not None:
     m_serial_port = args.serial_port
-if args.baud_rate != '':
+elif 'serial_port' in config_args:
+    m_serial_port = config_args['serial_port']
+if args.baud_rate is not None:
     m_baud_rate = args.baud_rate
+elif 'baud_rate' in config_args:
+    m_baud_rate = config_args['baud_rate']
 if args.skip_check is not None:
     m_skip_check = args.skip_check
+elif 'skip_check' in config_args:
+    m_skip_check = config_args['skip_check']
 if args.discharge is not None:
     m_discharge = args.discharge
+elif 'discharge' in config_args:
+    m_discharge = config_args['discharge']
 if args.max_voltage_power_supply is not None:
     m_max_voltage_power_supply = args.max_voltage_power_supply
+elif 'max_voltage_power_supply' in config_args:
+    m_max_voltage_power_supply = config_args['max_voltage_power_supply']
 if args.precharge_voltage_level is not None:
     m_precharge_voltage_level = args.precharge_voltage_level
+elif 'precharge_voltage_level' in config_args:
+    m_precharge_voltage_level = config_args['precharge_voltage_level']
 if args.precharge_current_level is not None:
     m_precharge_current_level = args.precharge_current_level
+elif 'precharge_current_level' in config_args:
+    m_precharge_current_level = config_args['precharge_current_level']
 if args.constant_voltage_level is not None:
     m_constant_voltage_level = args.constant_voltage_level
+elif 'constant_voltage_level' in config_args:
+    m_constant_voltage_level = config_args['constant_voltage_level']
 if args.constant_current_level is not None:
     m_constant_current_level = args.constant_current_level
+elif 'constant_current_level' in config_args:
+    m_constant_current_level = config_args['constant_current_level']
 if args.end_of_current_level is not None:
     m_end_of_current_level = args.end_of_current_level
+elif 'end_of_current_level' in config_args:
+    m_end_of_current_level = config_args['end_of_current_level']
 if args.soc_empty_voltage_level is not None:
     m_soc_empty_voltage_level = args.soc_empty_voltage_level
+elif 'soc_empty_voltage_level' in config_args:
+    m_soc_empty_voltage_level = config_args['soc_empty_voltage_level']
 if args.max_current is not None:
     m_max_current = args.max_current
+elif 'max_current' in config_args:
+    m_max_current = config_args['max_current']
 if args.typical_discharge_current is not None:
     m_typical_discharge_current = args.typical_discharge_current
+elif 'typical_discharge_current' in config_args:
+    m_typical_discharge_current = config_args['typical_discharge_current']
 if args.series_connection_resistance is not None:
     m_series_connection_resistance = args.series_connection_resistance
+elif 'series_connection_resistance' in config_args:
+    m_series_connection_resistance = config_args['series_connection_resistance']
 if args.series_discharge_resistor is not None:
     m_series_discharge_resistor = args.series_discharge_resistor
+elif 'series_discharge_resistor' in config_args:
+    m_series_discharge_resistor = config_args['series_discharge_resistor']
 
 # configure logging
 logging.basicConfig(level=logging.WARNING, stream=sys.stdout, format=FORMAT)
@@ -367,8 +411,9 @@ try:
         charge_battery()
 
 finally:
-    m_tenma.set_output(False)
-    m_tenma.close()
-    if m_relays[0] is not None:
-        for i in range(3):
+    if m_tenma is not None:
+        m_tenma.set_output(False)
+        m_tenma.close()
+    for i in range(3):
+        if m_relays[i] is not None:
             m_relays[i].close()

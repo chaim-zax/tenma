@@ -42,13 +42,14 @@ class Tenma:
         time.sleep(0.1)
         return res
 
-    def _read(self, length):
-        res = self.device.read(length).decode('ascii')
+    def _read(self, length=None):
+        res = self.device.read_until(size=length).decode('ascii')
         time.sleep(0.05)
         return res
 
     def _read_bytes(self, length):
-        res = self.device.read(length)
+        #res = self.device.read(length)
+        res = self.device.read_until(size=length)
         time.sleep(0.05)
         return res
 
@@ -60,7 +61,7 @@ class Tenma:
         with self.mutex:
             self._write(cmd)
 
-    def _receive_command(self, cmd, length=100):
+    def _receive_command(self, cmd, length=None):
         if self.device is None:
             print('ERROR: no power supply connected')
             return None
@@ -72,7 +73,7 @@ class Tenma:
                 res = self._read(length)
         return res
 
-    def _receive_number(self, cmd, length=100):
+    def _receive_number(self, cmd, length=None):
         return float(self._receive_command(cmd, length))
 
     def set_verbose_level(self, verbose_level):
@@ -93,8 +94,8 @@ class Tenma:
                 if platform.system() == 'Windows':
                     print("ERROR: No power supply found (use the '-p COM1' option and provide the correct port)")
                 else:
-                    print("ERROR: No power supply found (use the '-p /dev/ttyUSB0' option and provide the correct port,"
-                          " or install the udev rule as described in the INSTALL file)")
+                    print("ERROR: No power supply found (use the '-p /dev/ttyUSB0' or '-p /dev/tenma-psu' option and provide the correct port,"
+                          " and/or install the udev rule as described in the INSTALL file)")
             self.device = None
             return -1
 
@@ -241,7 +242,7 @@ class Tenma:
         Example *IDN?
         Contents TENMA 72‐2535 V2.0 (Manufacturer, model name,).
         """
-        return self._receive_command('*IDN?', 18)
+        return self._receive_command('*IDN?')
 
     def recall(self, nr):
         """
